@@ -48,12 +48,15 @@ STAGE_LABELS = [
 
 DOMAIN_SCOPE_LABELS = ["general", "bank_specific"]
 
+ADVICE_RISK_LABELS = ["low", "medium", "high"]
+
 LABEL_MAPPINGS = {
     "topic": TOPIC_LABELS,
     "intent": INTENT_TYPE_LABELS,
     "query": QUERY_TYPE_LABELS,
     "stage": STAGE_LABELS,
     "domain": DOMAIN_SCOPE_LABELS,
+    "advice_risk": ADVICE_RISK_LABELS,
 }
 
 
@@ -138,7 +141,7 @@ def test_sentence(model_dir: Path, text: str):
     models = {}
     tokenizers = {}
     
-    for label_type in ["topic", "intent", "query", "stage", "domain"]:
+    for label_type in ["topic", "intent", "query", "stage", "domain", "advice_risk"]:
         model, tokenizer = load_model(model_dir, label_type)
         if model is not None:
             models[label_type] = model

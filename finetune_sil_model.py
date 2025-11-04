@@ -3,7 +3,7 @@
 finetune_sil_model.py
 
 Fine-tune a transformer model for SIL classification using Vertex AI Custom Training.
-Multi-label classification: topic, intent_type, query_type, stage, domain_scope
+Multi-label classification: topic, intent_type, query_type, stage, domain_scope, advice_risk
 
 Usage:
   python finetune_sil_model.py \
@@ -66,6 +66,8 @@ STAGE_LABELS = [
 
 DOMAIN_SCOPE_LABELS = ["general", "bank_specific"]
 
+ADVICE_RISK_LABELS = ["low", "medium", "high"]  # 0.0-0.3, 0.4-0.6, 0.7-1.0
+
 
 def load_training_data(data_dir: Path) -> List[Dict]:
     """Load all JSON training files from topic/stage directories."""
@@ -117,6 +119,21 @@ def encode_labels(example: Dict, label_mappings: Dict[str, List[str]]) -> Dict:
     domain_idx = label_mappings["domain_scope"].get(example.get("domain_scope", ""), 0)
     encoded["labels_domain"] = domain_idx
     
+    # Advice risk (bucketize continuous score into low/medium/high)
+    advice_risk_score = example.get("advice_risk_score", 0.0)
+    if isinstance(advice_risk_score, (int, float)):
+        if advice_risk_score <= 0.3:
+            advice_risk_bucket = "low"
+        elif advice_risk_score <= 0.6:
+            advice_risk_bucket = "medium"
+        else:
+            advice_risk_bucket = "high"
+    else:
+        advice_risk_bucket = "low"  # Default fallback
+    
+    advice_risk_idx = label_mappings["advice_risk"].get(advice_risk_bucket, 0)
+    encoded["labels_advice_risk"] = advice_risk_idx
+    
     return encoded
 
 
@@ -144,6 +161,10 @@ def create_label_mappings() -> Dict[str, Dict[str, int]]:
     mappings["domain_scope"] = {label: idx for idx, label in enumerate(DOMAIN_SCOPE_LABELS)}
     mappings["domain_scope"]["unknown"] = 0
     
+    # Advice risk mapping
+    mappings["advice_risk"] = {label: idx for idx, label in enumerate(ADVICE_RISK_LABELS)}
+    mappings["advice_risk"]["unknown"] = 0
+    
     return mappings
 
 
@@ -164,6 +185,15 @@ def train_model(
     learning_rate: float = 2e-5,
 ):
     """Fine-tune the model on SIL classification task."""
+    
+    # Check for GPU availability
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        print(f"✅ GPU detected: {torch.cuda.get_device_name(0)}")
+        print(f"   GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print("⚠️  No GPU detected. Training will use CPU (will be slower).")
+    print(f"Using device: {device}\n")
     
     print(f"Loaded {len(training_data)} training examples")
     
@@ -202,6 +232,7 @@ def train_model(
         "query": len(QUERY_TYPE_LABELS),
         "stage": len(STAGE_LABELS),
         "domain": len(DOMAIN_SCOPE_LABELS),
+        "advice_risk": len(ADVICE_RISK_LABELS),
     }
     
     models = {}
