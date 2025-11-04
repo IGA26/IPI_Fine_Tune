@@ -115,7 +115,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "recommendation"],
         stages=["planning"],
         domain_scopes=["general"],
-        brand_hint="Tax efficiency and ISA allowance questions"
+        brand_hint="Tax efficiency and ISA allowance questions",
+        products=["ISA Allowance", "Personal Allowance", "Tax-Free Savings", "Capital Gains Tax", "Income Tax", "Tax Planning", "Tax Efficiency", "Tax Relief", "Tax Return", "Self Assessment", "HMRC", "Tax Year", "Tax Deduction", "Tax Credit", "Tax Exempt", "Pension Tax Relief", "Stocks & Shares ISA Tax", "Cash ISA Tax", "Lifetime ISA Tax", "Junior ISA Tax"]
     ),
     "general": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking", "guidance"],
