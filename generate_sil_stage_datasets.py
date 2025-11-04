@@ -147,6 +147,7 @@ Constraints:
 - Avoid duplicates.
 - Output exactly {count} lines; each line is a valid JSON object.
 - DO NOT wrap output in markdown code blocks (```json or ```). Output plain JSON only.
+- CRITICAL: All quotes in the "text" field must be properly escaped as \\" (backslash-quote). Avoid using quotes in text when possible. Ensure all JSON strings are properly closed.
 
 Example format (do not reuse text):
 {{"text": "How much can I contribute to a Cash ISA this tax year?", "topic": "savings", "intent_type": "fact_seeking", "query_type": "what_is", "stage": "understanding", "domain_scope": "general"}}
@@ -194,11 +195,22 @@ def parse_examples(payload: str) -> List[Dict]:
         # Skip markdown code block markers
         if line.startswith("```"):
             continue
+        
         try:
             parsed = json.loads(line)
             items.append(parsed)
         except json.JSONDecodeError as e:
-            print(f"Warning: Skipping invalid JSON on line {line_num}: {line[:100]}...", file=sys.stderr)
+            # Show more context for debugging
+            error_pos = getattr(e, 'pos', None)
+            if error_pos:
+                start = max(0, error_pos - 50)
+                end = min(len(line), error_pos + 50)
+                context = line[start:end]
+                print(f"Warning: Invalid JSON on line {line_num}, position {error_pos}:", file=sys.stderr)
+                print(f"  Context: ...{context}...", file=sys.stderr)
+                print(f"  Full line: {line}", file=sys.stderr)
+            else:
+                print(f"Warning: Invalid JSON on line {line_num}: {line[:200]}...", file=sys.stderr)
             print(f"  Error: {e}", file=sys.stderr)
             continue
     return items
