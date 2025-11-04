@@ -131,7 +131,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is"],
         stages=["awareness"],
         domain_scopes=["general"],
-        brand_hint="Non-financial or irrelevant queries"
+        brand_hint="Non-financial or irrelevant queries",
+        products=["Weather", "Sports", "Entertainment", "Cooking", "Travel", "Technology", "Health", "Education", "News", "General Knowledge", "Hobbies", "Shopping", "Fashion", "Food", "Music", "Movies", "Books", "Gaming", "Pets", "Home Improvement"]
     ),
 }
 
