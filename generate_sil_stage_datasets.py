@@ -150,6 +150,11 @@ Constraints:
     - HIGH RISK (0.7-1.0): Explicit advice ("should I", "what should I", "recommend", "advise me"), decision help ("help me decide", "help me choose"), personal recommendations ("which to buy", "where to invest", "how much"), opinion seeking ("do you think", "is it smart to")
 - Every utterance must logically align with the labels.
 - advice_risk_score must match the intent_type: fact_seeking = low (0.0-0.3), advice_seeking = high (0.7-1.0), guidance = medium (0.4-0.6).
+- IMPORTANT: Balance the distribution across all label types:
+  * Distribute intent_type values roughly evenly across {intent_types}
+  * Distribute query_type values roughly evenly across {query_types}
+  * Distribute domain_scope values roughly evenly (50/50 for general vs bank_specific when both are available)
+  * Distribute advice_risk_score roughly evenly across low (0.0-0.3), medium (0.4-0.6), and high (0.7-1.0) ranges
 - Cover informational asks, advice requests, goal statements, and account actions as permitted.
 - Avoid duplicates.
 - Output exactly {count} lines; each line is a COMPLETE, SINGLE-LINE JSON object (no line breaks within a JSON object).
