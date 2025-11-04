@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -32,8 +33,19 @@ from transformers import (
     Trainer,
     DataCollatorWithPadding,
 )
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, f1_score, confusion_matrix
 from sklearn.preprocessing import MultiLabelBinarizer
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('finetune.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 # Model configuration
@@ -82,6 +94,9 @@ def load_training_data(data_dir: Path) -> List[Dict]:
                 continue
             
             for json_file in stage_dir.glob("*.json"):
+                # Skip manifest files
+                if "manifest" in json_file.name.lower():
+                    continue
                 try:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
@@ -169,10 +184,19 @@ def create_label_mappings() -> Dict[str, Dict[str, int]]:
 
 
 def compute_metrics(eval_pred):
-    """Compute metrics for a specific label type."""
+    """Compute metrics for a specific label type (accuracy, F1 macro, F1 micro)."""
     predictions, labels = eval_pred
     predictions = np.argmax(predictions, axis=1)
-    return {"accuracy": accuracy_score(labels, predictions)}
+    
+    accuracy = accuracy_score(labels, predictions)
+    f1_macro = f1_score(labels, predictions, average='macro', zero_division=0)
+    f1_micro = f1_score(labels, predictions, average='micro', zero_division=0)
+    
+    return {
+        "accuracy": accuracy,
+        "f1_macro": f1_macro,
+        "f1_micro": f1_micro,
+    }
 
 
 def train_model(
@@ -183,45 +207,115 @@ def train_model(
     epochs: int = 5,
     batch_size: int = 16,
     learning_rate: float = 2e-5,
+    seed: int = 42,
 ):
     """Fine-tune the model on SIL classification task."""
+    
+    # Set random seeds for reproducibility
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    logger.info(f"Set random seed to {seed} for reproducibility")
     
     # Check for GPU availability
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if torch.cuda.is_available():
-        print(f"✅ GPU detected: {torch.cuda.get_device_name(0)}")
-        print(f"   GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        logger.info(f"✅ GPU detected: {torch.cuda.get_device_name(0)}")
+        logger.info(f"   GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     else:
-        print("⚠️  No GPU detected. Training will use CPU (will be slower).")
-    print(f"Using device: {device}\n")
+        logger.warning("⚠️  No GPU detected. Training will use CPU (will be slower).")
+    logger.info(f"Using device: {device}\n")
     
-    print(f"Loaded {len(training_data)} training examples")
+    logger.info(f"Loaded {len(training_data)} training examples")
     
     # Create label mappings
     label_mappings = create_label_mappings()
     
-    # Encode labels
-    processed_data = []
-    for ex in training_data:
-        processed = {
-            "text": ex.get("text", ""),
-            **encode_labels(ex, label_mappings)
-        }
-        if processed["text"]:
-            processed_data.append(processed)
+    # Save label mappings to JSON for deployment
+    label_map_file = Path(output_dir) / "label_mappings.json"
+    label_map_file.parent.mkdir(parents=True, exist_ok=True)
     
-    print(f"Processed {len(processed_data)} valid examples")
+    # Convert to serializable format
+    label_map_serializable = {}
+    for label_type, mapping in label_mappings.items():
+        label_map_serializable[label_type] = {
+            "labels": list(mapping.keys()),
+            "label_to_idx": mapping
+        }
+    
+    with open(label_map_file, 'w') as f:
+        json.dump(label_map_serializable, f, indent=2)
+    logger.info(f"Saved label mappings to {label_map_file}")
+    
+    # Encode labels and validate
+    processed_data = []
+    invalid_count = 0
+    for ex in training_data:
+        text = ex.get("text", "").strip()
+        if not text or len(text) < 5:
+            invalid_count += 1
+            continue
+        
+        try:
+            encoded = encode_labels(ex, label_mappings)
+            processed = {
+                "text": text,
+                **encoded
+            }
+            processed_data.append(processed)
+        except Exception as e:
+            invalid_count += 1
+            if invalid_count <= 10:  # Only show first 10 errors
+                print(f"Warning: Skipping invalid example: {e}", file=sys.stderr)
+    
+    if invalid_count > 0:
+        logger.warning(f"⚠️  Skipped {invalid_count} invalid examples")
+    logger.info(f"Processed {len(processed_data)} valid examples")
+    
+    if not processed_data:
+        logger.error("❌ Error: No valid training examples after processing")
+        sys.exit(1)
+    
+    # Deduplicate based on text (case-insensitive, stripped)
+    seen_texts = set()
+    deduplicated_data = []
+    duplicate_count = 0
+    
+    for ex in processed_data:
+        text_key = ex["text"].strip().lower()
+        if text_key not in seen_texts:
+            seen_texts.add(text_key)
+            deduplicated_data.append(ex)
+        else:
+            duplicate_count += 1
+    
+    if duplicate_count > 0:
+        logger.warning(f"⚠️  Removed {duplicate_count} duplicate examples (based on text content)")
+        logger.info(f"After deduplication: {len(deduplicated_data)} unique examples")
+    
+    if not deduplicated_data:
+        logger.error("❌ Error: No unique examples after deduplication")
+        sys.exit(1)
     
     # Create dataset
-    dataset = Dataset.from_list(processed_data)
+    dataset = Dataset.from_list(deduplicated_data)
     
     # Split train/val (80/20)
-    dataset = dataset.train_test_split(test_size=0.2, seed=42)
-    train_dataset = dataset["train"]
-    val_dataset = dataset["test"]
+    # Note: For stratified split by topic, we'd need to use sklearn's train_test_split
+    # but HuggingFace datasets doesn't support stratification directly
+    if len(dataset) < 10:
+        logger.warning("⚠️  Very small dataset. Using all data for training (no validation split).")
+        train_dataset = dataset
+        val_dataset = dataset  # Use same for validation (will be ignored)
+    else:
+        dataset = dataset.train_test_split(test_size=0.2, seed=seed)
+        train_dataset = dataset["train"]
+        val_dataset = dataset["test"]
+        logger.info(f"Split dataset: {len(train_dataset)} train, {len(val_dataset)} validation")
     
     # Load tokenizer and model
-    print(f"Loading base model: {BASE_MODEL}")
+    logger.info(f"Loading base model: {BASE_MODEL}")
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
     
     # Create separate models for each label type (multi-head approach)
@@ -238,11 +332,13 @@ def train_model(
     models = {}
     trainers = {}
     
-    # Train separate models for each label type
+    # Train separate models for each label type (multi-head approach)
+    # This is correct: each label type (topic, intent, etc.) is independent
+    # and gets its own classification head, avoiding interference
     for label_type, num_label in num_labels.items():
-        print(f"\n{'='*60}")
-        print(f"Training model for: {label_type}")
-        print(f"{'='*60}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Training model for: {label_type}")
+        logger.info(f"{'='*60}")
         
         model = AutoModelForSequenceClassification.from_pretrained(
             BASE_MODEL,
@@ -261,17 +357,22 @@ def train_model(
         # Select the appropriate label column
         label_col = f"labels_{label_type}"
         
+        # Verify label column exists
+        if label_col not in train_dataset.column_names:
+            logger.warning(f"⚠️  Label column '{label_col}' not found in dataset. Skipping {label_type}.")
+            continue
+        
         train_tokenized = train_dataset.map(
             tokenize,
             batched=True,
-            remove_columns=[col for col in train_dataset.column_names if col != label_col]
+            remove_columns=[col for col in train_dataset.column_names if col not in ["text", label_col]]
         )
         train_tokenized = train_tokenized.rename_column(label_col, "labels")
         
         val_tokenized = val_dataset.map(
             tokenize,
             batched=True,
-            remove_columns=[col for col in val_dataset.column_names if col != label_col]
+            remove_columns=[col for col in val_dataset.column_names if col not in ["text", label_col]]
         )
         val_tokenized = val_tokenized.rename_column(label_col, "labels")
         
@@ -300,30 +401,45 @@ def train_model(
             model=model,
             args=training_args,
             train_dataset=train_tokenized,
-            eval_dataset=val_tokenized,
+            eval_dataset=val_tokenized if len(val_tokenized) > 0 else None,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
         )
         
         # Train
+        logger.info(f"Training {label_type} model...")
         trainer.train()
         
         # Evaluate
-        results = trainer.evaluate()
-        print(f"\n{label_type} Results:")
-        print(json.dumps(results, indent=2))
+        if len(val_tokenized) > 0:
+            results = trainer.evaluate()
+            logger.info(f"\n{label_type} Results:")
+            logger.info(json.dumps(results, indent=2))
+            
+            # Generate confusion matrix for detailed analysis
+            predictions = trainer.predict(val_tokenized)
+            pred_labels = np.argmax(predictions.predictions, axis=1)
+            true_labels = predictions.label_ids
+            
+            cm = confusion_matrix(true_labels, pred_labels)
+            logger.info(f"\n{label_type} Confusion Matrix (first 10x10):")
+            logger.info(f"\n{cm[:10, :10]}")
+        else:
+            logger.info(f"\n{label_type}: Training complete (no validation set)")
         
-        # Save model
+        # Save model, tokenizer, and config
         trainer.save_model()
         tokenizer.save_pretrained(f"{output_dir}/{label_type}")
+        logger.info(f"Saved {label_type} model to {output_dir}/{label_type}")
         
         models[label_type] = model
         trainers[label_type] = trainer
     
-    print(f"\n{'='*60}")
-    print("Training complete!")
-    print(f"Models saved to: {output_dir}")
-    print(f"{'='*60}")
+    logger.info(f"\n{'='*60}")
+    logger.info("Training complete!")
+    logger.info(f"Models saved to: {output_dir}")
+    logger.info(f"Label mappings saved to: {output_dir}/label_mappings.json")
+    logger.info(f"{'='*60}")
     
     return models, trainers
 
@@ -338,6 +454,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--model", default=BASE_MODEL, help="Base model to fine-tune")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     
     args = parser.parse_args()
     
@@ -362,6 +479,7 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        seed=args.seed,
     )
 
 
