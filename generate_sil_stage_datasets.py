@@ -123,7 +123,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "recommendation"],
         stages=["planning", "understanding"],
         domain_scopes=["general"],
-        brand_hint="Overall financial wellbeing guidance"
+        brand_hint="Overall financial wellbeing guidance",
+        products=["Financial Planning", "Budgeting", "Money Management", "Financial Wellbeing", "Financial Health", "Emergency Fund", "Financial Goals", "Financial Literacy", "Money Mindset", "Financial Security", "Financial Stability", "Cash Flow", "Expense Tracking", "Saving Habits", "Financial Education", "Money Management Tips", "Financial Advice", "Financial Guidance", "Financial Support"]
     ),
     "off_topic": TopicConfig(
         intent_types=["off_topic"],
