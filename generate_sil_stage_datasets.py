@@ -129,6 +129,9 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
 }
 
 PROMPT_TEMPLATE = """You are generating labelled training data for a financial Semantic Interface Layer (SIL).
+
+CRITICAL: Generate output directly without excessive internal reasoning. Focus on producing the JSON examples immediately.
+
 Return NEWLINE-SEPARATED JSON objects (no outer array, no markdown code blocks, plain JSON only) with this schema:
 
 {{
@@ -203,13 +206,51 @@ def call_gemini(model: GenerativeModel, prompt: str, expected_count: int = 40, m
                 },
                 safety_settings={},
             )
-            # Handle different response formats
-            if hasattr(response, 'text'):
-                return response.text or ""
+            
+            # Extract text from response
+            text = None
+            if hasattr(response, 'text') and response.text:
+                text = response.text
             elif hasattr(response, 'candidates') and response.candidates:
-                return response.candidates[0].content.parts[0].text or ""
-            else:
-                return str(response) if response else ""
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content:
+                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        # Check if parts have text
+                        text_parts = [p.text for p in candidate.content.parts if hasattr(p, 'text') and p.text]
+                        if text_parts:
+                            text = "".join(text_parts)
+                
+                # Check finish reason
+                if hasattr(candidate, 'finish_reason'):
+                    finish_reason = candidate.finish_reason
+                    if finish_reason == "MAX_TOKENS" and not text:
+                        # Model hit token limit without producing output
+                        # This happens when model uses all tokens on "thoughts"
+                        print(f"⚠️  Warning: Model hit MAX_TOKENS with no output text (attempt {attempt + 1}/{max_retries})", file=sys.stderr)
+                        if attempt < max_retries - 1:
+                            # Reduce max_output_tokens and retry
+                            max_tokens = int(max_tokens * 0.7)  # Reduce by 30%
+                            print(f"  Retrying with reduced max_output_tokens: {max_tokens}", file=sys.stderr)
+                            time.sleep(2)
+                            continue
+                        else:
+                            raise Exception(f"Model hit MAX_TOKENS without producing output text. Finish reason: {finish_reason}")
+            
+            if not text:
+                # Check if we have any response at all
+                if hasattr(response, 'usage_metadata'):
+                    usage = response.usage_metadata
+                    print(f"⚠️  Warning: Empty response. Usage: {usage}", file=sys.stderr)
+                
+                if attempt < max_retries - 1:
+                    print(f"  Retrying with smaller batch size (attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+                    time.sleep(2)
+                    continue
+                else:
+                    raise Exception("Cannot get the response text. Response candidate content has no parts (and thus no text).")
+            
+            return text
+            
         except Exception as e:
             error_str = str(e).lower()
             # Check for rate limit errors
@@ -223,6 +264,13 @@ def call_gemini(model: GenerativeModel, prompt: str, expected_count: int = 40, m
                     print(f"Rate limit error after {max_retries} attempts: {e}", file=sys.stderr)
                     raise
             else:
+                # Check if it's the empty response error - retry with smaller tokens
+                if "cannot get" in error_str or "no parts" in error_str or "max_tokens" in error_str:
+                    if attempt < max_retries - 1:
+                        max_tokens = int(max_tokens * 0.7)  # Reduce tokens
+                        print(f"Empty response error. Retrying with max_output_tokens={max_tokens} (attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+                        time.sleep(2)
+                        continue
                 # Non-rate-limit error, raise immediately
                 print(f"Error calling Gemini: {e}", file=sys.stderr)
                 raise
@@ -519,11 +567,18 @@ def main(argv=None):
     if args.stage and args.stage not in config.stages:
         raise ValueError(f"Stage '{args.stage}' not valid for topic '{args.topic}'. Valid: {config.stages}")
 
+    # Ensure output directory exists (for local paths)
+    if not args.output.startswith("gs://"):
+        output_dir = Path(args.output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Output directory: {output_dir.absolute()}", file=sys.stderr)
+
     vertex_init(project=args.project, location=args.location)
     model = GenerativeModel(args.model)
 
     gcs_client = storage.Client(project=args.project) if args.output.startswith("gs://") else None
 
+    print(f"Generating {args.examples} examples for topic '{args.topic}'...", file=sys.stderr)
     dataset = generate_batch(
         topic=args.topic,
         config=config,
@@ -532,6 +587,13 @@ def main(argv=None):
         count=args.examples,
         stage_override=args.stage,
     )
+
+    if not dataset or "training_data" not in dataset:
+        raise Exception("Failed to generate dataset - empty or malformed response")
+    
+    if len(dataset["training_data"]) == 0:
+        print("⚠️  Warning: Generated 0 examples. Nothing to save.", file=sys.stderr)
+        return
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     # Organize output by topic/stage in filesystem
@@ -542,7 +604,14 @@ def main(argv=None):
     
     filename = f"{args.topic}_{stage_dir}_training_data_{timestamp}.json"
     output_path = Path(args.output) / args.topic / stage_dir / filename
-    save_json(dataset, output_path, gcs_client)
+    
+    print(f"Saving {len(dataset['training_data'])} examples to {output_path}...", file=sys.stderr)
+    try:
+        save_json(dataset, output_path, gcs_client)
+        print(f"✅ Successfully saved to {output_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ Error saving file: {e}", file=sys.stderr)
+        raise
 
     manifest = {
         "topic": args.topic,
@@ -551,8 +620,11 @@ def main(argv=None):
         "output_path": str(output_path),
     }
     manifest_path = Path(args.output) / f"manifest_{timestamp}.json"
-    save_json(manifest, manifest_path, gcs_client)
-    print("Manifest:", manifest_path)
+    try:
+        save_json(manifest, manifest_path, gcs_client)
+        print(f"Manifest saved: {manifest_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"⚠️  Warning: Could not save manifest: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
