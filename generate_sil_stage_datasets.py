@@ -83,7 +83,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "account_action"],
         stages=["awareness", "action"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Retail and digital banking with Lloyds Banking Group"
+        brand_hint="Retail and digital banking with Lloyds Banking Group",
+        products=["Current Account", "Debit Card", "Credit Card", "Mobile Banking", "Online Banking", "Mobile App", "Banking App", "Standing Order", "Direct Debit", "Bank Statement", "Account Balance", "Money Transfer", "Bill Payment", "ATM", "Overdraft", "Branch Services"]
     ),
     "loans": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking", "account_action"],
@@ -156,6 +157,7 @@ Constraints:
   * Comparisons: "[brand] vs [competitor] [product]", "Compare [brand] products"
   * Service queries: "[brand] branch near me", "[brand] opening hours", "[brand] customer service"
 {products_hint}
+- CRITICAL: Ensure good distribution across products when domain_scope is "bank_specific". Don't repeat the same product too many times - vary the products used across bank_specific examples.
 - Allowable values:
   * intent_type ∈ {intent_types}
   * query_type ∈ {query_types}
@@ -432,7 +434,11 @@ def generate_batch(
     stages = [stage_override] if stage_override else config.stages
     products_hint = ""
     if config.products:
-        products_hint = f"  * Use specific products when relevant: {', '.join(config.products)}"
+        products_list = ', '.join(config.products)
+        products_hint = f"""- PRODUCT DISTRIBUTION: When generating bank_specific queries (20-30% of examples), distribute examples across these LBG products and services: {products_list}
+  * For bank_specific domain_scope, ensure queries mention or reference at least {min(8, len(config.products))} different products across the {count} examples
+  * Include product-specific queries like: "What is [product]?", "Does Lloyds offer [product]?", "How do I use [product]?", "What are [product] features?"
+  * For general domain_scope, products can be mentioned generically (e.g., "what is an ISA" rather than "Lloyds Cash ISA")"""
     
     # Split into batches if count is large to avoid rate limits and ensure we get all examples
     batch_size = 100  # Generate 100 examples per batch
