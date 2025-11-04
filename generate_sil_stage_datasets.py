@@ -91,7 +91,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "eligibility", "recommendation", "account_action"],
         stages=["planning", "execution"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Personal loans from Lloyds Banking Group brands"
+        brand_hint="Personal loans from Lloyds Banking Group brands",
+        products=["Personal Loan", "Secured Loan", "Unsecured Loan", "Debt Consolidation Loan", "Car Loan", "Home Improvement Loan", "Wedding Loan", "Holiday Loan", "Student Loan", "Loan Calculator", "Loan Repayment", "Early Repayment", "Loan Application", "Loan Approval", "Loan Interest Rate", "Fixed Rate Loan", "Variable Rate Loan"]
     ),
     "debt": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking"],
@@ -502,6 +503,10 @@ def generate_batch(
             if len(batch_unique) < current_batch_size * 0.5:  # Got less than 50% of requested
                 print(f"  ⚠️  Warning: Got only {len(batch_unique)}/{current_batch_size} examples. Response may have been truncated.", file=sys.stderr)
             
+            # Warn if duplicate rate is high (more than 30% of valid examples are duplicates)
+            if len(examples) > 0 and batch_duplicate > len(examples) * 0.3:
+                print(f"  ⚠️  Warning: High duplicate rate ({batch_duplicate}/{len(examples)} = {batch_duplicate/len(examples)*100:.1f}%). This may slow down generation.", file=sys.stderr)
+            
             # Add delay between batches to avoid rate limits
             if len(all_unique) < count:
                 delay = 2  # 2 second delay between batches
@@ -513,6 +518,9 @@ def generate_batch(
             print(f"⚠️  Warning: Generated {len(unique)}/{count} examples ({len(unique)/count*100:.1f}%). Consider running again or checking for issues.", file=sys.stderr)
         else:
             print(f"✅ Generated {len(unique)} total unique examples (requested {count})", file=sys.stderr)
+        
+        if duplicate_count > 0:
+            print(f"   Note: {duplicate_count} duplicates were filtered out (not counted toward total)", file=sys.stderr)
     else:
         # Single batch for smaller requests
         prompt = PROMPT_TEMPLATE.format(
