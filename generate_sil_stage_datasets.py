@@ -17,6 +17,7 @@ Usage:
   
   # Project and location are hardcoded (default: playpen-c84ca, us-central1)
   # Override with --project and --location if needed
+  v2.0
 """
 
 import argparse
@@ -145,9 +146,10 @@ Constraints:
 - Every utterance must logically align with the labels.
 - Cover informational asks, advice requests, goal statements, and account actions as permitted.
 - Avoid duplicates.
-- Output exactly {count} lines; each line is a valid JSON object.
+- Output exactly {count} lines; each line is a COMPLETE, SINGLE-LINE JSON object (no line breaks within a JSON object).
 - DO NOT wrap output in markdown code blocks (```json or ```). Output plain JSON only.
 - CRITICAL: All quotes in the "text" field must be properly escaped as \\" (backslash-quote). Avoid using quotes in text when possible. Ensure all JSON strings are properly closed.
+- CRITICAL: Each JSON object must be complete on a single line. Do not split JSON objects across multiple lines.
 
 Example format (do not reuse text):
 {{"text": "How much can I contribute to a Cash ISA this tax year?", "topic": "savings", "intent_type": "fact_seeking", "query_type": "what_is", "stage": "understanding", "domain_scope": "general"}}
@@ -156,7 +158,11 @@ Generate {count} new examples now.
 """
 
 
-def call_gemini(model: GenerativeModel, prompt: str) -> str:
+def call_gemini(model: GenerativeModel, prompt: str, expected_count: int = 40) -> str:
+    # Calculate max_output_tokens based on expected count (roughly 100 chars per example)
+    # Add buffer for safety
+    max_tokens = max(8192, expected_count * 150)  # At least 8K, or 150 tokens per example
+    
     try:
         response = model.generate_content(
             prompt,
@@ -164,7 +170,7 @@ def call_gemini(model: GenerativeModel, prompt: str) -> str:
                 "temperature": 0.3,  # Lower for structured output compliance
                 "top_p": 0.9,
                 "top_k": 40,
-                "max_output_tokens": 2048,
+                "max_output_tokens": max_tokens,
             },
             safety_settings={},
         )
@@ -188,6 +194,12 @@ def parse_examples(payload: str) -> List[Dict]:
     elif "```" in payload:
         payload = payload.split("```")[1].split("```")[0]
     
+    # Try to handle multi-line JSON objects by accumulating lines
+    current_json = ""
+    brace_count = 0
+    in_string = False
+    escape_next = False
+    
     for line_num, line in enumerate(payload.strip().splitlines(), 1):
         line = line.strip()
         if not line:
@@ -196,23 +208,50 @@ def parse_examples(payload: str) -> List[Dict]:
         if line.startswith("```"):
             continue
         
-        try:
-            parsed = json.loads(line)
-            items.append(parsed)
-        except json.JSONDecodeError as e:
-            # Show more context for debugging
-            error_pos = getattr(e, 'pos', None)
-            if error_pos:
-                start = max(0, error_pos - 50)
-                end = min(len(line), error_pos + 50)
-                context = line[start:end]
-                print(f"Warning: Invalid JSON on line {line_num}, position {error_pos}:", file=sys.stderr)
-                print(f"  Context: ...{context}...", file=sys.stderr)
-                print(f"  Full line: {line}", file=sys.stderr)
-            else:
-                print(f"Warning: Invalid JSON on line {line_num}: {line[:200]}...", file=sys.stderr)
-            print(f"  Error: {e}", file=sys.stderr)
-            continue
+        # Accumulate lines for multi-line JSON
+        current_json += line
+        
+        # Check if we have a complete JSON object
+        for char in line:
+            if escape_next:
+                escape_next = False
+                continue
+            if char == '\\':
+                escape_next = True
+                continue
+            if char == '"' and not escape_next:
+                in_string = not in_string
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+        
+        # If braces are balanced, try to parse
+        if brace_count == 0 and current_json:
+            try:
+                parsed = json.loads(current_json)
+                items.append(parsed)
+                current_json = ""
+            except json.JSONDecodeError as e:
+                # Show more context for debugging
+                error_pos = getattr(e, 'pos', None)
+                if error_pos:
+                    start = max(0, error_pos - 50)
+                    end = min(len(current_json), error_pos + 50)
+                    context = current_json[start:end]
+                    print(f"Warning: Invalid JSON ending at line {line_num}, position {error_pos}:", file=sys.stderr)
+                    print(f"  Context: ...{context}...", file=sys.stderr)
+                    print(f"  Full JSON: {current_json[:300]}...", file=sys.stderr)
+                else:
+                    print(f"Warning: Invalid JSON ending at line {line_num}: {current_json[:200]}...", file=sys.stderr)
+                print(f"  Error: {e}", file=sys.stderr)
+                current_json = ""  # Reset and continue
+    
+    # Handle any remaining incomplete JSON
+    if current_json.strip():
+        print(f"Warning: Incomplete JSON at end of response (unclosed braces): {current_json[:200]}...", file=sys.stderr)
+    
     return items
 
 
@@ -268,7 +307,7 @@ def generate_batch(
         domain_scopes=config.domain_scopes,
         count=count,
     )
-    raw = call_gemini(model, prompt)
+    raw = call_gemini(model, prompt, expected_count=count)
     examples = parse_examples(raw)
 
     unique = []
@@ -296,7 +335,7 @@ def generate_batch(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Generate SIL datasets by topic (optional stage).")
-    parser.add_argument("--project", default="playpen-c84ca", help="GCP project ID")
+    parser.add_argument("--project", default="playpen-c84caa", help="GCP project ID")
     parser.add_argument("--location", default="us-central1", help="Vertex AI location")
     parser.add_argument("--output", required=True, help="gs://bucket/path or local directory")
     parser.add_argument("--model", default="gemini-2.5-flash", help="Gemini model name")
