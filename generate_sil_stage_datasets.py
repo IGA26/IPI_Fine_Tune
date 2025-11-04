@@ -123,7 +123,7 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
 }
 
 PROMPT_TEMPLATE = """You are generating labelled training data for a financial Semantic Interface Layer (SIL).
-Return NEWLINE-SEPARATED JSON objects (no outer array) with this schema:
+Return NEWLINE-SEPARATED JSON objects (no outer array, no markdown code blocks, plain JSON only) with this schema:
 
 {{
   "text": "<user utterance>",
@@ -146,6 +146,7 @@ Constraints:
 - Cover informational asks, advice requests, goal statements, and account actions as permitted.
 - Avoid duplicates.
 - Output exactly {count} lines; each line is a valid JSON object.
+- DO NOT wrap output in markdown code blocks (```json or ```). Output plain JSON only.
 
 Example format (do not reuse text):
 {{"text": "How much can I contribute to a Cash ISA this tax year?", "topic": "savings", "intent_type": "fact_seeking", "query_type": "what_is", "stage": "understanding", "domain_scope": "general"}}
@@ -155,25 +156,51 @@ Generate {count} new examples now.
 
 
 def call_gemini(model: GenerativeModel, prompt: str) -> str:
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.3,  # Lower for structured output compliance
-            "top_p": 0.9,
-            "top_k": 40,
-            "max_output_tokens": 2048,
-        },
-        safety_settings={},
-    )
-    return response.text or ""
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.3,  # Lower for structured output compliance
+                "top_p": 0.9,
+                "top_k": 40,
+                "max_output_tokens": 2048,
+            },
+            safety_settings={},
+        )
+        # Handle different response formats
+        if hasattr(response, 'text'):
+            return response.text or ""
+        elif hasattr(response, 'candidates') and response.candidates:
+            return response.candidates[0].content.parts[0].text or ""
+        else:
+            return str(response) if response else ""
+    except Exception as e:
+        print(f"Error calling Gemini: {e}", file=sys.stderr)
+        raise
 
 
 def parse_examples(payload: str) -> List[Dict]:
     items = []
-    for line in payload.strip().splitlines():
-        if not line.strip():
+    # Remove markdown code blocks if present
+    if "```json" in payload:
+        payload = payload.split("```json")[1].split("```")[0]
+    elif "```" in payload:
+        payload = payload.split("```")[1].split("```")[0]
+    
+    for line_num, line in enumerate(payload.strip().splitlines(), 1):
+        line = line.strip()
+        if not line:
             continue
-        items.append(json.loads(line))
+        # Skip markdown code block markers
+        if line.startswith("```"):
+            continue
+        try:
+            parsed = json.loads(line)
+            items.append(parsed)
+        except json.JSONDecodeError as e:
+            print(f"Warning: Skipping invalid JSON on line {line_num}: {line[:100]}...", file=sys.stderr)
+            print(f"  Error: {e}", file=sys.stderr)
+            continue
     return items
 
 
@@ -215,6 +242,7 @@ def generate_batch(
     topic: str,
     config: TopicConfig,
     model: GenerativeModel,
+    model_name: str,
     count: int,
     stage_override: Optional[str],
 ) -> Dict:
@@ -249,7 +277,7 @@ def generate_batch(
         "fields": ["text", "topic", "intent_type", "query_type", "stage", "domain_scope"],
         "requested_examples": count,
         "total_examples": len(unique),
-        "model_name": model._model_id,  # type: ignore[attr-defined]
+        "model_name": model_name,
     }
     return {"metadata": metadata, "training_data": unique}
 
@@ -282,6 +310,7 @@ def main(argv=None):
         topic=args.topic,
         config=config,
         model=model,
+        model_name=args.model,
         count=args.examples,
         stage_override=args.stage,
     )
