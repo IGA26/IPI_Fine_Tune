@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""
+generate_sil_stage_datasets.py
+
+Generate SIL-labelled training datasets using Vertex AI Gemini.
+Stages match taxonomy_financial_enhanced.yaml exactly for fine-tuning.
+
+Usage:
+  python generate_sil_stage_datasets.py \
+      --project my-proj --region europe-west1 \
+      --output gs://my-bucket/sil_data \
+      --topic savings --examples 40
+
+  # Stage-specific
+  python generate_sil_stage_datasets.py \
+      --project my-proj --region europe-west1 \
+      --output gs://my-bucket/sil_data \
+      --topic savings --stage optimisation --examples 20
+"""
+
+import argparse
+import json
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from google.cloud import storage
+from vertexai import init as vertex_init
+from vertexai.generative_models import GenerativeModel
+
+
+@dataclass
+class TopicConfig:
+    intent_types: List[str]
+    query_types: List[str]
+    stages: List[str]
+    domain_scopes: List[str]
+    brand_hint: str
+
+
+# Stages extracted from taxonomy_financial_enhanced.yaml
+TOPIC_MATRIX: Dict[str, TopicConfig] = {
+    "savings": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "account_action", "goal_expression", "guidance"],
+        query_types=["what_is", "eligibility", "recommendation", "account_action", "goal_expression"],
+        stages=["goal_setup", "accumulation", "understanding", "optimisation", "withdrawal"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Lloyds Banking Group (Lloyds, Halifax, Bank of Scotland)"
+    ),
+    "investments": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "account_action", "guidance"],
+        query_types=["what_is", "comparison", "recommendation", "account_action"],
+        stages=["goal_definition", "execution"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Lloyds Banking Group investment services"
+    ),
+    "pensions": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "account_action"],
+        query_types=["what_is", "eligibility", "recommendation", "account_action"],
+        stages=["enrolment", "accumulation", "decumulation"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Lloyds pension advice and account servicing"
+    ),
+    "mortgages": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "account_action"],
+        query_types=["what_is", "eligibility", "recommendation", "account_action"],
+        stages=["application", "repayment", "remortgage"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Lloyds, Halifax, Bank of Scotland mortgage services"
+    ),
+    "banking": TopicConfig(
+        intent_types=["fact_seeking", "account_action"],
+        query_types=["what_is", "account_action"],
+        stages=["awareness", "action"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Retail and digital banking with Lloyds Banking Group"
+    ),
+    "loans": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "account_action"],
+        query_types=["what_is", "eligibility", "recommendation", "account_action"],
+        stages=["planning", "execution"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Personal loans from Lloyds Banking Group brands"
+    ),
+    "debt": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking"],
+        query_types=["what_is", "recommendation"],
+        stages=["management"],
+        domain_scopes=["general"],
+        brand_hint="Debt management support (LBG and UK advice services)"
+    ),
+    "insurance": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "account_action"],
+        query_types=["what_is", "recommendation", "eligibility", "account_action"],
+        stages=["planning", "claim"],
+        domain_scopes=["general", "bank_specific"],
+        brand_hint="Lloyds Banking Group insurance products"
+    ),
+    "taxation": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking"],
+        query_types=["what_is", "recommendation"],
+        stages=["planning"],
+        domain_scopes=["general"],
+        brand_hint="Tax efficiency and ISA allowance questions"
+    ),
+    "general": TopicConfig(
+        intent_types=["fact_seeking", "advice_seeking", "guidance"],
+        query_types=["what_is", "recommendation"],
+        stages=["planning", "understanding"],
+        domain_scopes=["general"],
+        brand_hint="Overall financial wellbeing guidance"
+    ),
+    "off_topic": TopicConfig(
+        intent_types=["off_topic"],
+        query_types=["what_is"],
+        stages=["awareness"],
+        domain_scopes=["general"],
+        brand_hint="Non-financial or irrelevant queries"
+    ),
+}
+
+PROMPT_TEMPLATE = """You are generating labelled training data for a financial Semantic Interface Layer (SIL).
+Return NEWLINE-SEPARATED JSON objects (no outer array) with this schema:
+
+{{
+  "text": "<user utterance>",
+  "topic": "{topic}",
+  "intent_type": "<intent>",
+  "query_type": "<query>",
+  "stage": "<stage>",
+  "domain_scope": "<general or bank_specific>"
+}}
+
+Constraints:
+- UK customer voice; FCA-compliant tone.
+- Include both general questions and {brand_hint} scenarios when domain_scope is "bank_specific".
+- Allowable values:
+  * intent_type ∈ {intent_types}
+  * query_type ∈ {query_types}
+  * stage ∈ {stages}
+  * domain_scope ∈ {domain_scopes}
+- Every utterance must logically align with the labels.
+- Cover informational asks, advice requests, goal statements, and account actions as permitted.
+- Avoid duplicates.
+- Output exactly {count} lines; each line is a valid JSON object.
+
+Example format (do not reuse text):
+{{"text": "How much can I contribute to a Cash ISA this tax year?", "topic": "savings", "intent_type": "fact_seeking", "query_type": "what_is", "stage": "understanding", "domain_scope": "general"}}
+
+Generate {count} new examples now.
+"""
+
+
+def call_gemini(model: GenerativeModel, prompt: str) -> str:
+    response = model.generate_content(
+        prompt,
+        generation_config={
+            "temperature": 0.3,  # Lower for structured output compliance
+            "top_p": 0.9,
+            "top_k": 40,
+            "max_output_tokens": 2048,
+        },
+        safety_settings={},
+    )
+    return response.text or ""
+
+
+def parse_examples(payload: str) -> List[Dict]:
+    items = []
+    for line in payload.strip().splitlines():
+        if not line.strip():
+            continue
+        items.append(json.loads(line))
+    return items
+
+
+def validate_example(example: Dict, topic: str, config: TopicConfig, stage_override: Optional[str]):
+    required = {"text", "topic", "intent_type", "query_type", "stage", "domain_scope"}
+    missing = required - example.keys()
+    if missing:
+        raise ValueError(f"Missing fields {missing} in {example}")
+    if example["topic"] != topic:
+        raise ValueError(f"Topic mismatch: {example}")
+    if example["intent_type"] not in config.intent_types:
+        raise ValueError(f"Invalid intent_type: {example}")
+    if example["query_type"] not in config.query_types:
+        raise ValueError(f"Invalid query_type: {example}")
+    if stage_override:
+        if example["stage"] != stage_override:
+            raise ValueError(f"Stage mismatch (expected {stage_override}): {example}")
+    elif example["stage"] not in config.stages:
+        raise ValueError(f"Invalid stage: {example}")
+    if example["domain_scope"] not in config.domain_scopes:
+        raise ValueError(f"Invalid domain_scope: {example}")
+    if not example["text"] or len(example["text"]) < 8:
+        raise ValueError(f"Utterance too short: {example}")
+
+
+def save_json(data: Dict, target: Path, gcs_client: Optional[storage.Client]):
+    if str(target).startswith("gs://"):
+        bucket_name, *blob_parts = str(target).replace("gs://", "").split("/")
+        blob_name = "/".join(blob_parts)
+        bucket = gcs_client.bucket(bucket_name)
+        bucket.blob(blob_name).upload_from_string(json.dumps(data, indent=2), content_type="application/json")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"[saved] {target}")
+
+
+def generate_batch(
+    topic: str,
+    config: TopicConfig,
+    model: GenerativeModel,
+    count: int,
+    stage_override: Optional[str],
+) -> Dict:
+    stages = [stage_override] if stage_override else config.stages
+    prompt = PROMPT_TEMPLATE.format(
+        topic=topic,
+        brand_hint=config.brand_hint,
+        intent_types=config.intent_types,
+        query_types=config.query_types,
+        stages=stages,
+        domain_scopes=config.domain_scopes,
+        count=count,
+    )
+    raw = call_gemini(model, prompt)
+    examples = parse_examples(raw)
+
+    unique = []
+    seen = set()
+    for ex in examples:
+        validate_example(ex, topic, config, stage_override)
+        key = ex["text"].strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ex)
+
+    metadata = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "topic": topic,
+        "stage_filter": stage_override,
+        "schema": "sil_intent_v1",
+        "fields": ["text", "topic", "intent_type", "query_type", "stage", "domain_scope"],
+        "requested_examples": count,
+        "total_examples": len(unique),
+        "model_name": model._model_id,  # type: ignore[attr-defined]
+    }
+    return {"metadata": metadata, "training_data": unique}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Generate SIL datasets by topic (optional stage).")
+    parser.add_argument("--project", required=True, help="GCP project ID")
+    parser.add_argument("--region", required=True, help="Vertex AI region")
+    parser.add_argument("--output", required=True, help="gs://bucket/path or local directory")
+    parser.add_argument("--model", default="gemini-1.5-pro", help="Gemini model name")
+    parser.add_argument("--topic", choices=TOPIC_MATRIX.keys(), required=True, help="Topic to generate")
+    parser.add_argument("--stage", help="Optional stage filter; must belong to the topic's stages")
+    parser.add_argument("--examples", type=int, default=40, help="Examples to request")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    config = TOPIC_MATRIX[args.topic]
+    if args.stage and args.stage not in config.stages:
+        raise ValueError(f"Stage '{args.stage}' not valid for topic '{args.topic}'. Valid: {config.stages}")
+
+    vertex_init(project=args.project, location=args.region)
+    model = GenerativeModel(args.model)
+
+    gcs_client = storage.Client(project=args.project) if args.output.startswith("gs://") else None
+
+    dataset = generate_batch(
+        topic=args.topic,
+        config=config,
+        model=model,
+        count=args.examples,
+        stage_override=args.stage,
+    )
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stage_suffix = f"_{args.stage}" if args.stage else ""
+    filename = f"{args.topic}{stage_suffix}_training_data_{timestamp}.json"
+    output_path = Path(args.output) / args.topic / filename
+    save_json(dataset, output_path, gcs_client)
+
+    manifest = {
+        "topic": args.topic,
+        "stage": args.stage,
+        "example_count": dataset["metadata"]["total_examples"],
+        "output_path": str(output_path),
+    }
+    manifest_path = Path(args.output) / f"manifest_{timestamp}.json"
+    save_json(manifest, manifest_path, gcs_client)
+    print("Manifest:", manifest_path)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        sys.exit(1)
+
