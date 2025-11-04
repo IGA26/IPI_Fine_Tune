@@ -7,15 +7,16 @@ Stages match taxonomy_financial_enhanced.yaml exactly for fine-tuning.
 
 Usage:
   python generate_sil_stage_datasets.py \
-      --project my-proj --region europe-west1 \
-      --output gs://my-bucket/sil_data \
+      --output ./training_data \
       --topic savings --examples 40
 
   # Stage-specific
   python generate_sil_stage_datasets.py \
-      --project my-proj --region europe-west1 \
-      --output gs://my-bucket/sil_data \
+      --output ./training_data \
       --topic savings --stage optimisation --examples 20
+  
+  # Project and location are hardcoded (default: playpen-c84ca, us-central1)
+  # Override with --project and --location if needed
 """
 
 import argparse
@@ -255,10 +256,10 @@ def generate_batch(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Generate SIL datasets by topic (optional stage).")
-    parser.add_argument("--project", required=True, help="GCP project ID")
-    parser.add_argument("--region", required=True, help="Vertex AI region")
+    parser.add_argument("--project", default="playpen-c84ca", help="GCP project ID")
+    parser.add_argument("--location", default="us-central1", help="Vertex AI location")
     parser.add_argument("--output", required=True, help="gs://bucket/path or local directory")
-    parser.add_argument("--model", default="gemini-1.5-pro", help="Gemini model name")
+    parser.add_argument("--model", default="gemini-2.5-flash", help="Gemini model name")
     parser.add_argument("--topic", choices=TOPIC_MATRIX.keys(), required=True, help="Topic to generate")
     parser.add_argument("--stage", help="Optional stage filter; must belong to the topic's stages")
     parser.add_argument("--examples", type=int, default=40, help="Examples to request")
@@ -272,7 +273,7 @@ def main(argv=None):
     if args.stage and args.stage not in config.stages:
         raise ValueError(f"Stage '{args.stage}' not valid for topic '{args.topic}'. Valid: {config.stages}")
 
-    vertex_init(project=args.project, location=args.region)
+    vertex_init(project=args.project, location=args.location)
     model = GenerativeModel(args.model)
 
     gcs_client = storage.Client(project=args.project) if args.output.startswith("gs://") else None
