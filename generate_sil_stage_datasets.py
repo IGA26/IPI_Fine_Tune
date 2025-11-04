@@ -132,7 +132,8 @@ Return NEWLINE-SEPARATED JSON objects (no outer array, no markdown code blocks, 
   "intent_type": "<intent>",
   "query_type": "<query>",
   "stage": "<stage>",
-  "domain_scope": "<general or bank_specific>"
+  "domain_scope": "<general or bank_specific>",
+  "advice_risk_score": <number between 0.0 and 1.0>
 }}
 
 Constraints:
@@ -143,7 +144,12 @@ Constraints:
   * query_type ∈ {query_types}
   * stage ∈ {stages}
   * domain_scope ∈ {domain_scopes}
+  * advice_risk_score: number (0.0 to 1.0)
+    - LOW RISK (0.0-0.3): Factual questions ("what is", "how does", "explain", "tell me about"), general information ("types of", "benefits of", "eligibility"), educational content
+    - MEDIUM RISK (0.4-0.6): Comparative questions ("which is better", "pros and cons", "compare"), suitability queries ("right for me", "suitable for my situation"), time-based questions ("when should", "is now good")
+    - HIGH RISK (0.7-1.0): Explicit advice ("should I", "what should I", "recommend", "advise me"), decision help ("help me decide", "help me choose"), personal recommendations ("which to buy", "where to invest", "how much"), opinion seeking ("do you think", "is it smart to")
 - Every utterance must logically align with the labels.
+- advice_risk_score must match the intent_type: fact_seeking = low (0.0-0.3), advice_seeking = high (0.7-1.0), guidance = medium (0.4-0.6).
 - Cover informational asks, advice requests, goal statements, and account actions as permitted.
 - Avoid duplicates.
 - Output exactly {count} lines; each line is a COMPLETE, SINGLE-LINE JSON object (no line breaks within a JSON object).
@@ -152,7 +158,7 @@ Constraints:
 - CRITICAL: Each JSON object must be complete on a single line. Do not split JSON objects across multiple lines.
 
 Example format (do not reuse text):
-{{"text": "How much can I contribute to a Cash ISA this tax year?", "topic": "savings", "intent_type": "fact_seeking", "query_type": "what_is", "stage": "understanding", "domain_scope": "general"}}
+{{"text": "How much can I contribute to a Cash ISA this tax year?", "topic": "savings", "intent_type": "fact_seeking", "query_type": "what_is", "stage": "understanding", "domain_scope": "general", "advice_risk_score": 0.2}}
 
 Generate {count} new examples now.
 """
@@ -256,7 +262,7 @@ def parse_examples(payload: str) -> List[Dict]:
 
 
 def validate_example(example: Dict, topic: str, config: TopicConfig, stage_override: Optional[str]):
-    required = {"text", "topic", "intent_type", "query_type", "stage", "domain_scope"}
+    required = {"text", "topic", "intent_type", "query_type", "stage", "domain_scope", "advice_risk_score"}
     missing = required - example.keys()
     if missing:
         raise ValueError(f"Missing fields {missing} in {example}")
@@ -273,6 +279,14 @@ def validate_example(example: Dict, topic: str, config: TopicConfig, stage_overr
         raise ValueError(f"Invalid stage: {example}")
     if example["domain_scope"] not in config.domain_scopes:
         raise ValueError(f"Invalid domain_scope: {example}")
+    # Validate advice_risk_score
+    advice_risk = example.get("advice_risk_score")
+    if advice_risk is None:
+        raise ValueError(f"Missing advice_risk_score: {example}")
+    if not isinstance(advice_risk, (int, float)):
+        raise ValueError(f"advice_risk_score must be a number: {example}")
+    if not (0.0 <= advice_risk <= 1.0):
+        raise ValueError(f"advice_risk_score must be between 0.0 and 1.0: {example}")
     if not example["text"] or len(example["text"]) < 8:
         raise ValueError(f"Utterance too short: {example}")
 
@@ -325,7 +339,7 @@ def generate_batch(
         "topic": topic,
         "stage_filter": stage_override,
         "schema": "sil_intent_v1",
-        "fields": ["text", "topic", "intent_type", "query_type", "stage", "domain_scope"],
+        "fields": ["text", "topic", "intent_type", "query_type", "stage", "domain_scope", "advice_risk_score"],
         "requested_examples": count,
         "total_examples": len(unique),
         "model_name": model_name,
