@@ -99,7 +99,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "recommendation"],
         stages=["management"],
         domain_scopes=["general"],
-        brand_hint="Debt management support (LBG and UK advice services)"
+        brand_hint="Debt management support (LBG and UK advice services)",
+        products=["Debt Management Plan", "Debt Consolidation", "Payment Plan", "Financial Hardship Support", "Debt Advice", "Debt Counselling", "IVA (Individual Voluntary Arrangement)", "Debt Settlement", "Payment Holiday", "Debt Relief Order", "Bankruptcy Advice", "Debt Repayment", "Debt Negotiation", "StepChange", "Citizens Advice", "Money Advice Service"]
     ),
     "insurance": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking", "account_action"],
