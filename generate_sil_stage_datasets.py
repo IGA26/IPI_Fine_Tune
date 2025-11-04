@@ -269,9 +269,40 @@ def parse_examples(payload: str) -> List[Dict]:
                 print(f"  Error: {e}", file=sys.stderr)
                 current_json = ""  # Reset and continue
     
-    # Handle any remaining incomplete JSON
+    # Handle any remaining incomplete JSON - try to salvage it
     if current_json.strip():
-        print(f"Warning: Incomplete JSON at end of response (unclosed braces): {current_json[:200]}...", file=sys.stderr)
+        # Try to fix incomplete JSON by adding missing closing braces
+        missing_braces = brace_count
+        if missing_braces > 0:
+            # Check if we have a valid structure that just needs closing
+            if current_json.strip().startswith("{") and '"text"' in current_json:
+                # Try to complete it
+                try:
+                    # Add missing closing braces and quotes if needed
+                    fixed_json = current_json.strip()
+                    # Close any unclosed strings (rough heuristic)
+                    if fixed_json.count('"') % 2 != 0:
+                        # Find last quote and add closing if needed
+                        last_quote_idx = fixed_json.rfind('"')
+                        if last_quote_idx > 0:
+                            # Check if we're inside a string
+                            before_quote = fixed_json[:last_quote_idx]
+                            if before_quote.count('"') % 2 == 0:  # We're in a string
+                                fixed_json += '"'
+                    
+                    # Add missing closing braces
+                    fixed_json += "}" * missing_braces
+                    
+                    # Try to parse the fixed JSON
+                    parsed = json.loads(fixed_json)
+                    items.append(parsed)
+                    print(f"Note: Recovered incomplete JSON by adding {missing_braces} closing brace(s)", file=sys.stderr)
+                except json.JSONDecodeError:
+                    print(f"Warning: Could not recover incomplete JSON: {current_json[:200]}...", file=sys.stderr)
+            else:
+                print(f"Warning: Incomplete JSON at end of response (unclosed braces): {current_json[:200]}...", file=sys.stderr)
+        else:
+            print(f"Warning: Incomplete JSON at end of response: {current_json[:200]}...", file=sys.stderr)
     
     return items
 
