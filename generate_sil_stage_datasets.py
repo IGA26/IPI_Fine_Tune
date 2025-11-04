@@ -58,7 +58,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "comparison", "recommendation", "account_action"],
         stages=["goal_definition", "execution"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Lloyds Banking Group investment services"
+        brand_hint="Lloyds Banking Group investment services",
+        products=["Investment ISA", "Stocks & Shares ISA", "Investment Account", "SIPP", "Investment Funds", "ETFs", "Unit Trusts", "OEICs", "Investment Platform", "Shares", "Stocks", "Bonds"]
     ),
     "pensions": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking", "account_action"],
@@ -140,6 +141,7 @@ Return NEWLINE-SEPARATED JSON objects (no outer array, no markdown code blocks, 
 
 Constraints:
 - UK customer voice; FCA-compliant tone.
+- CRITICAL: Generate 70-80% general queries and 20-30% bank_specific queries. Most users start with general questions ("what is an ISA?") before asking about specific banks.
 - Include both general questions and {brand_hint} scenarios when domain_scope is "bank_specific".
 - When domain_scope is "bank_specific", include realistic queries like:
   * Product questions: "Does [brand] offer [product]?", "What is [brand] [product] rate?", "[brand] [product] features"
@@ -162,7 +164,7 @@ Constraints:
 - IMPORTANT: Balance the distribution across all label types:
   * Distribute intent_type values roughly evenly across {intent_types}
   * Distribute query_type values roughly evenly across {query_types}
-  * Distribute domain_scope values realistically: 70-80% general, 20-30% bank_specific (when both are available)
+  * CRITICAL: domain_scope MUST be 70-80% general and 20-30% bank_specific. Most users ask general questions first. Only use bank_specific when the query explicitly mentions a brand name (Lloyds, Halifax, Bank of Scotland) or asks about specific bank products. Generate approximately 3-4 general queries for every 1 bank_specific query.
   * Distribute advice_risk_score roughly evenly across low (0.0-0.3), medium (0.4-0.6), and high (0.7-1.0) ranges
 - Cover informational asks, advice requests, goal statements, and account actions as permitted.
 - For banking topic with account_action intent/query_type, include realistic account queries like: "check my balance", "what is my account balance", "view my transactions", "transfer money", "pay bills", "check my statements", etc.
