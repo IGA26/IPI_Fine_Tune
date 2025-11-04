@@ -23,6 +23,7 @@ Usage:
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,32 +183,51 @@ Generate {count} new examples now.
 """
 
 
-def call_gemini(model: GenerativeModel, prompt: str, expected_count: int = 40) -> str:
+def call_gemini(model: GenerativeModel, prompt: str, expected_count: int = 40, max_retries: int = 3) -> str:
     # Calculate max_output_tokens based on expected count (roughly 100 chars per example)
     # Add buffer for safety
     max_tokens = max(8192, expected_count * 150)  # At least 8K, or 150 tokens per example
     
-    try:
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.3,  # Lower for structured output compliance
-                "top_p": 0.9,
-                "top_k": 40,
-                "max_output_tokens": max_tokens,
-            },
-            safety_settings={},
-        )
-        # Handle different response formats
-        if hasattr(response, 'text'):
-            return response.text or ""
-        elif hasattr(response, 'candidates') and response.candidates:
-            return response.candidates[0].content.parts[0].text or ""
-        else:
-            return str(response) if response else ""
-    except Exception as e:
-        print(f"Error calling Gemini: {e}", file=sys.stderr)
-        raise
+    # Cap at reasonable limit (Gemini has limits)
+    max_tokens = min(max_tokens, 32768)  # Gemini 2.5 Flash max
+    
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.3,  # Lower for structured output compliance
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "max_output_tokens": max_tokens,
+                },
+                safety_settings={},
+            )
+            # Handle different response formats
+            if hasattr(response, 'text'):
+                return response.text or ""
+            elif hasattr(response, 'candidates') and response.candidates:
+                return response.candidates[0].content.parts[0].text or ""
+            else:
+                return str(response) if response else ""
+        except Exception as e:
+            error_str = str(e).lower()
+            # Check for rate limit errors
+            if "rate limit" in error_str or "429" in error_str or "quota" in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 5  # Exponential backoff: 5s, 10s, 20s
+                    print(f"Rate limit hit. Retrying in {wait_time} seconds... (attempt {attempt + 1}/{max_retries})", file=sys.stderr)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"Rate limit error after {max_retries} attempts: {e}", file=sys.stderr)
+                    raise
+            else:
+                # Non-rate-limit error, raise immediately
+                print(f"Error calling Gemini: {e}", file=sys.stderr)
+                raise
+    
+    raise Exception("Failed to get response after retries")
 
 
 def parse_examples(payload: str) -> List[Dict]:
@@ -301,11 +321,11 @@ def parse_examples(payload: str) -> List[Dict]:
                     items.append(parsed)
                     print(f"Note: Recovered incomplete JSON by adding {missing_braces} closing brace(s)", file=sys.stderr)
                 except json.JSONDecodeError:
-                    print(f"Warning: Could not recover incomplete JSON: {current_json[:200]}...", file=sys.stderr)
+                    print(f"Note: Could not recover incomplete JSON (1 example lost - this is normal): {current_json[:200]}...", file=sys.stderr)
             else:
-                print(f"Warning: Incomplete JSON at end of response (unclosed braces): {current_json[:200]}...", file=sys.stderr)
+                print(f"Note: Incomplete JSON at end of response (1 example lost - this is normal): {current_json[:200]}...", file=sys.stderr)
         else:
-            print(f"Warning: Incomplete JSON at end of response: {current_json[:200]}...", file=sys.stderr)
+            print(f"Note: Incomplete JSON at end of response (1 example lost - this is normal): {current_json[:200]}...", file=sys.stderr)
     
     return items
 
@@ -365,28 +385,107 @@ def generate_batch(
     if config.products:
         products_hint = f"  * Use specific products when relevant: {', '.join(config.products)}"
     
-    prompt = PROMPT_TEMPLATE.format(
-        topic=topic,
-        brand_hint=config.brand_hint,
-        intent_types=config.intent_types,
-        query_types=config.query_types,
-        stages=stages,
-        domain_scopes=config.domain_scopes,
-        products_hint=products_hint,
-        count=count,
-    )
-    raw = call_gemini(model, prompt, expected_count=count)
-    examples = parse_examples(raw)
+    # Split into batches if count is large to avoid rate limits and ensure we get all examples
+    batch_size = 100  # Generate 100 examples per batch
+    if count > batch_size:
+        print(f"Generating {count} examples in batches of {batch_size} to avoid rate limits...", file=sys.stderr)
+        all_unique = []
+        seen = set()
+        max_batches = 10  # Safety limit to prevent infinite loops
+        batch_num = 0
+        invalid_count = 0
+        duplicate_count = 0
+        
+        while len(all_unique) < count and batch_num < max_batches:
+            remaining = count - len(all_unique)
+            current_batch_size = min(batch_size, remaining)
+            
+            batch_num += 1
+            print(f"Batch {batch_num}: Generating {current_batch_size} examples (need {remaining} more)...", file=sys.stderr)
+            
+            prompt = PROMPT_TEMPLATE.format(
+                topic=topic,
+                brand_hint=config.brand_hint,
+                intent_types=config.intent_types,
+                query_types=config.query_types,
+                stages=stages,
+                domain_scopes=config.domain_scopes,
+                products_hint=products_hint,
+                count=current_batch_size,
+            )
+            
+            raw = call_gemini(model, prompt, expected_count=current_batch_size)
+            examples = parse_examples(raw)
+            
+            print(f"  Parsed {len(examples)} JSON objects from response", file=sys.stderr)
+            
+            batch_unique = []
+            batch_invalid = 0
+            batch_duplicate = 0
+            
+            for ex in examples:
+                try:
+                    validate_example(ex, topic, config, stage_override)
+                    key = ex["text"].strip().lower()
+                    if key in seen:
+                        batch_duplicate += 1
+                        continue
+                    seen.add(key)
+                    batch_unique.append(ex)
+                    all_unique.append(ex)
+                except ValueError as e:
+                    batch_invalid += 1
+                    invalid_count += 1
+                    continue
+            
+            duplicate_count += batch_duplicate
+            
+            print(f"  Batch result: {len(batch_unique)} valid, {batch_invalid} invalid, {batch_duplicate} duplicates", file=sys.stderr)
+            print(f"  Total so far: {len(all_unique)}/{count} (invalid: {invalid_count}, duplicates: {duplicate_count})", file=sys.stderr)
+            
+            # If we got very few examples, warn and continue
+            if len(batch_unique) < current_batch_size * 0.5:  # Got less than 50% of requested
+                print(f"  ⚠️  Warning: Got only {len(batch_unique)}/{current_batch_size} examples. Response may have been truncated.", file=sys.stderr)
+            
+            # Add delay between batches to avoid rate limits
+            if len(all_unique) < count:
+                delay = 2  # 2 second delay between batches
+                print(f"  Waiting {delay} seconds before next batch...", file=sys.stderr)
+                time.sleep(delay)
+        
+        unique = all_unique
+        if len(unique) < count:
+            print(f"⚠️  Warning: Generated {len(unique)}/{count} examples ({len(unique)/count*100:.1f}%). Consider running again or checking for issues.", file=sys.stderr)
+        else:
+            print(f"✅ Generated {len(unique)} total unique examples (requested {count})", file=sys.stderr)
+    else:
+        # Single batch for smaller requests
+        prompt = PROMPT_TEMPLATE.format(
+            topic=topic,
+            brand_hint=config.brand_hint,
+            intent_types=config.intent_types,
+            query_types=config.query_types,
+            stages=stages,
+            domain_scopes=config.domain_scopes,
+            products_hint=products_hint,
+            count=count,
+        )
+        raw = call_gemini(model, prompt, expected_count=count)
+        examples = parse_examples(raw)
 
-    unique = []
-    seen = set()
-    for ex in examples:
-        validate_example(ex, topic, config, stage_override)
-        key = ex["text"].strip().lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(ex)
+        unique = []
+        seen = set()
+        for ex in examples:
+            try:
+                validate_example(ex, topic, config, stage_override)
+                key = ex["text"].strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(ex)
+            except ValueError as e:
+                print(f"Warning: Skipping invalid example: {e}", file=sys.stderr)
+                continue
 
     metadata = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
