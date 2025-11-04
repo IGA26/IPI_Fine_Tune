@@ -40,6 +40,7 @@ class TopicConfig:
     stages: List[str]
     domain_scopes: List[str]
     brand_hint: str
+    products: List[str] = None  # Optional: specific products for bank_specific queries
 
 
 # Stages extracted from taxonomy_financial_enhanced.yaml
@@ -49,7 +50,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "eligibility", "recommendation", "account_action", "goal_expression"],
         stages=["goal_setup", "accumulation", "understanding", "optimisation", "withdrawal"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Lloyds Banking Group (Lloyds, Halifax, Bank of Scotland)"
+        brand_hint="Lloyds Banking Group (Lloyds, Halifax, Bank of Scotland)",
+        products=["Cash ISA", "Stocks & Shares ISA", "Lifetime ISA", "Junior ISA", "Regular Savings Account", "Easy Access Savings", "Fixed Rate Savings", "Notice Savings Account"]
     ),
     "investments": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking", "account_action", "guidance"],
@@ -139,6 +141,13 @@ Return NEWLINE-SEPARATED JSON objects (no outer array, no markdown code blocks, 
 Constraints:
 - UK customer voice; FCA-compliant tone.
 - Include both general questions and {brand_hint} scenarios when domain_scope is "bank_specific".
+- When domain_scope is "bank_specific", include realistic queries like:
+  * Product questions: "Does [brand] offer [product]?", "What is [brand] [product] rate?", "[brand] [product] features"
+  * Eligibility: "Am I eligible for [brand] [product]?", "[brand] account requirements"
+  * Account actions: "Check my [brand] balance", "Transfer from my [brand] account", "View my [brand] statements"
+  * Comparisons: "[brand] vs [competitor] [product]", "Compare [brand] products"
+  * Service queries: "[brand] branch near me", "[brand] opening hours", "[brand] customer service"
+{products_hint}
 - Allowable values:
   * intent_type ∈ {intent_types}
   * query_type ∈ {query_types}
@@ -153,9 +162,10 @@ Constraints:
 - IMPORTANT: Balance the distribution across all label types:
   * Distribute intent_type values roughly evenly across {intent_types}
   * Distribute query_type values roughly evenly across {query_types}
-  * Distribute domain_scope values roughly evenly (50/50 for general vs bank_specific when both are available)
+  * Distribute domain_scope values realistically: 70-80% general, 20-30% bank_specific (when both are available)
   * Distribute advice_risk_score roughly evenly across low (0.0-0.3), medium (0.4-0.6), and high (0.7-1.0) ranges
 - Cover informational asks, advice requests, goal statements, and account actions as permitted.
+- For banking topic with account_action intent/query_type, include realistic account queries like: "check my balance", "what is my account balance", "view my transactions", "transfer money", "pay bills", "check my statements", etc.
 - Avoid duplicates.
 - Output exactly {count} lines; each line is a COMPLETE, SINGLE-LINE JSON object (no line breaks within a JSON object).
 - DO NOT wrap output in markdown code blocks (```json or ```). Output plain JSON only.
@@ -317,6 +327,10 @@ def generate_batch(
     stage_override: Optional[str],
 ) -> Dict:
     stages = [stage_override] if stage_override else config.stages
+    products_hint = ""
+    if config.products:
+        products_hint = f"  * Use specific products when relevant: {', '.join(config.products)}"
+    
     prompt = PROMPT_TEMPLATE.format(
         topic=topic,
         brand_hint=config.brand_hint,
@@ -324,6 +338,7 @@ def generate_batch(
         query_types=config.query_types,
         stages=stages,
         domain_scopes=config.domain_scopes,
+        products_hint=products_hint,
         count=count,
     )
     raw = call_gemini(model, prompt, expected_count=count)
