@@ -66,7 +66,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "eligibility", "recommendation", "account_action"],
         stages=["enrolment", "accumulation", "decumulation"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Lloyds pension advice and account servicing"
+        brand_hint="Lloyds pension advice and account servicing",
+        products=["Workplace Pension", "Personal Pension", "SIPP", "Self-Invested Personal Pension", "State Pension", "Defined Benefit Pension", "Defined Contribution Pension", "Pension Transfer", "Pension Drawdown", "Annuity", "Pension Pot"]
     ),
     "mortgages": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking", "account_action"],
