@@ -75,7 +75,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "eligibility", "recommendation", "account_action"],
         stages=["application", "repayment", "remortgage"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Lloyds, Halifax, Bank of Scotland mortgage services"
+        brand_hint="Lloyds, Halifax, Bank of Scotland mortgage services",
+        products=["Fixed Rate Mortgage", "Tracker Mortgage", "Offset Mortgage", "Variable Rate Mortgage", "Buy-to-Let Mortgage", "First-Time Buyer Mortgage", "Help to Buy Mortgage", "Shared Ownership Mortgage", "Remortgage", "Mortgage Overpayment", "Mortgage Payment Holiday", "Mortgage Porting"]
     ),
     "banking": TopicConfig(
         intent_types=["fact_seeking", "account_action"],
