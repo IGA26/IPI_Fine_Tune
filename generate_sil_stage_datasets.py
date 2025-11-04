@@ -106,7 +106,8 @@ TOPIC_MATRIX: Dict[str, TopicConfig] = {
         query_types=["what_is", "recommendation", "eligibility", "account_action"],
         stages=["planning", "claim"],
         domain_scopes=["general", "bank_specific"],
-        brand_hint="Lloyds Banking Group insurance products"
+        brand_hint="Lloyds Banking Group insurance products",
+        products=["Life Insurance", "Home Insurance", "Buildings Insurance", "Contents Insurance", "Travel Insurance", "Car Insurance", "Motor Insurance", "Pet Insurance", "Critical Illness Cover", "Income Protection Insurance", "Mobile Phone Insurance", "Landlord Insurance", "Buy-to-Let Insurance", "Insurance Claim", "Insurance Policy", "Insurance Premium", "Insurance Renewal", "Insurance Quote", "Insurance Coverage"]
     ),
     "taxation": TopicConfig(
         intent_types=["fact_seeking", "advice_seeking"],
@@ -171,6 +172,7 @@ Constraints:
 - Every utterance must logically align with the labels.
 - advice_risk_score must match the intent_type: fact_seeking = low (0.0-0.3), advice_seeking = high (0.7-1.0), guidance = medium (0.4-0.6).
 - IMPORTANT: Balance the distribution across all label types:
+  * CRITICAL: Distribute stage values evenly across {stages}. If there are 2 stages, aim for roughly 50/50 split (e.g., 200 examples per stage for 400 total). If there are 3+ stages, distribute as evenly as possible.
   * Distribute intent_type values roughly evenly across {intent_types}
   * Distribute query_type values roughly evenly across {query_types}
   * CRITICAL: domain_scope MUST be 70-80% general and 20-30% bank_specific. Most users ask general questions first. Only use bank_specific when the query explicitly mentions a brand name (Lloyds, Halifax, Bank of Scotland) or asks about specific bank products. Generate approximately 3-4 general queries for every 1 bank_specific query.
@@ -436,10 +438,13 @@ def generate_batch(
     products_hint = ""
     if config.products:
         products_list = ', '.join(config.products)
+        # Calculate how many products to use: at least 8, or 30% of available products if more than 8
+        min_products = min(max(8, int(len(config.products) * 0.3)), len(config.products))
         products_hint = f"""- PRODUCT DISTRIBUTION: When generating bank_specific queries (20-30% of examples), distribute examples across these LBG products and services: {products_list}
-  * For bank_specific domain_scope, ensure queries mention or reference at least {min(8, len(config.products))} different products across the {count} examples
+  * For bank_specific domain_scope, ensure queries mention or reference at least {min_products} different products across the {count} examples. Vary the products used - don't focus on just one or two products.
   * Include product-specific queries like: "What is [product]?", "Does Lloyds offer [product]?", "How do I use [product]?", "What are [product] features?"
-  * For general domain_scope, products can be mentioned generically (e.g., "what is an ISA" rather than "Lloyds Cash ISA")"""
+  * For general domain_scope, products can be mentioned generically (e.g., "what is life insurance" rather than "Lloyds Life Insurance") but still cover different product types
+  * CRITICAL: Ensure good variety across different product categories/types (e.g., for insurance: life, home, travel, car, pet, etc.)"""
     
     # Split into batches if count is large to avoid rate limits and ensure we get all examples
     batch_size = 100  # Generate 100 examples per batch
