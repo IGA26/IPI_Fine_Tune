@@ -286,9 +286,14 @@ def main(argv=None):
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stage_suffix = f"_{args.stage}" if args.stage else ""
-    filename = f"{args.topic}{stage_suffix}_training_data_{timestamp}.json"
-    output_path = Path(args.output) / args.topic / filename
+    # Organize output by topic/stage in filesystem
+    if args.stage:
+        stage_dir = args.stage
+    else:
+        stage_dir = "all_stages"
+    
+    filename = f"{args.topic}_{stage_dir}_training_data_{timestamp}.json"
+    output_path = Path(args.output) / args.topic / stage_dir / filename
     save_json(dataset, output_path, gcs_client)
 
     manifest = {

@@ -1,0 +1,7 @@
+# Requirements for SIL training data generation script
+# Install with: pip install -r finetuning_requirements.txt
+
+# Google Cloud dependencies
+google-cloud-aiplatform>=1.38.0  # Vertex AI / Gemini
+google-cloud-storage>=2.10.0    # GCS uploads
+
