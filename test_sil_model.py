@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -87,7 +88,9 @@ def load_model(model_dir: Path, label_type: str):
 def predict(model, tokenizer, text: str, label_type: str):
     """Run inference on a single text."""
     if model is None or tokenizer is None:
-        return None, None
+        return None, None, None
+    
+    start_time = time.time()
     
     # Tokenize
     inputs = tokenizer(
@@ -128,7 +131,9 @@ def predict(model, tokenizer, text: str, label_type: str):
         for idx in top3_indices
     ]
     
-    return predicted_label, confidence, top3_predictions
+    inference_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+    
+    return predicted_label, confidence, top3_predictions, inference_time
 
 
 def test_sentence(model_dir: Path, text: str):
@@ -156,11 +161,13 @@ def test_sentence(model_dir: Path, text: str):
     
     print(f"\nDevice: {'GPU' if torch.cuda.is_available() else 'CPU'}\n")
     
-    # Run predictions
+    # Run predictions with timing
+    total_start = time.time()
     results = {}
+    inference_times = {}
     
     for label_type in models.keys():
-        predicted_label, confidence, top3 = predict(
+        predicted_label, confidence, top3, inference_time = predict(
             models[label_type],
             tokenizers[label_type],
             text,
@@ -171,8 +178,12 @@ def test_sentence(model_dir: Path, text: str):
             results[label_type] = {
                 "prediction": predicted_label,
                 "confidence": float(confidence),
-                "top3": top3
+                "top3": top3,
+                "inference_time_ms": inference_time
             }
+            inference_times[label_type] = inference_time
+    
+    total_time = (time.time() - total_start) * 1000  # Convert to milliseconds
     
     # Display results
     print(f"{'='*60}")
@@ -183,10 +194,22 @@ def test_sentence(model_dir: Path, text: str):
         print(f"{label_type.upper()}:")
         print(f"  Prediction: {result['prediction']}")
         print(f"  Confidence: {result['confidence']:.2%}")
+        print(f"  Inference Time: {result['inference_time_ms']:.2f} ms")
         print(f"  Top 3:")
         for i, top in enumerate(result['top3'], 1):
             print(f"    {i}. {top['label']}: {top['confidence']:.2%}")
         print()
+    
+    # Display timing summary
+    print(f"{'='*60}")
+    print("TIMING SUMMARY:")
+    print(f"{'='*60}")
+    print(f"Total inference time: {total_time:.2f} ms")
+    print(f"Average per model: {total_time / len(results):.2f} ms")
+    if inference_times:
+        print(f"Fastest: {min(inference_times.values()):.2f} ms ({min(inference_times, key=inference_times.get)})")
+        print(f"Slowest: {max(inference_times.values()):.2f} ms ({max(inference_times, key=inference_times.get)})")
+    print()
     
     # Return structured output
     return results
