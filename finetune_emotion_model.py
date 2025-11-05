@@ -122,12 +122,12 @@ def create_label_mappings() -> Dict[str, Dict[str, int]]:
 
 def tokenize(examples: Dict, tokenizer) -> Dict:
     """Tokenize text examples."""
+    # Don't use return_tensors="pt" here - let DataCollator handle padding
     return tokenizer(
         examples["text"],
         truncation=True,
-        padding="max_length",
+        padding=False,  # DataCollator will handle padding
         max_length=128,
-        return_tensors="pt"
     )
 
 
@@ -210,17 +210,21 @@ def train_model(
         ignore_mismatched_sizes=True  # Safety: ignore if there's a mismatch
     )
     
-    # Tokenize
+    # Tokenize (preserve label columns)
     train_tokenized = train_dataset.map(
         lambda x: tokenize(x, tokenizer),
         batched=True,
-        remove_columns=["text"]
+        remove_columns=["text"]  # Keep labels_emotion, labels_distress, labels_vulnerability
     )
     val_tokenized = val_dataset.map(
         lambda x: tokenize(x, tokenizer),
         batched=True,
-        remove_columns=["text"]
+        remove_columns=["text"]  # Keep labels_emotion, labels_distress, labels_vulnerability
     )
+    
+    # Rename label column to "labels" (expected by Trainer)
+    train_tokenized = train_tokenized.rename_column("labels_emotion", "labels")
+    val_tokenized = val_tokenized.rename_column("labels_emotion", "labels")
     
     # Data collator
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
@@ -293,16 +297,16 @@ def train_model(
             ignore_mismatched_sizes=True  # Safety: ignore if there's a mismatch
         )
         
-        # Tokenize
+        # Tokenize (preserve label column)
         task_train_tokenized = task_train.map(
             lambda x: tokenize(x, tokenizer),
             batched=True,
-            remove_columns=["text"]
+            remove_columns=["text"]  # Keep "labels" column
         )
         task_val_tokenized = task_val.map(
             lambda x: tokenize(x, tokenizer),
             batched=True,
-            remove_columns=["text"]
+            remove_columns=["text"]  # Keep "labels" column
         )
         
         # Training arguments for binary task
