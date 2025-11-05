@@ -202,10 +202,12 @@ def train_model(
     logger.info(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
     
     # Initialize tokenizer and model
+    # Always load from BASE_MODEL, not from output_dir to avoid shape mismatches
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
     model = AutoModelForSequenceClassification.from_pretrained(
         BASE_MODEL,
-        num_labels=len(EMOTION_LABELS)
+        num_labels=len(EMOTION_LABELS),
+        ignore_mismatched_sizes=True  # Safety: ignore if there's a mismatch
     )
     
     # Tokenize
@@ -284,8 +286,11 @@ def train_model(
         task_val = task_dataset["test"]
         
         # Load fresh model for binary classification
+        # Always load from BASE_MODEL to avoid shape mismatches
         task_model = AutoModelForSequenceClassification.from_pretrained(
-            BASE_MODEL, num_labels=2
+            BASE_MODEL, 
+            num_labels=2,
+            ignore_mismatched_sizes=True  # Safety: ignore if there's a mismatch
         )
         
         # Tokenize
@@ -350,6 +355,8 @@ def train_model(
 
 
 def main():
+    import shutil
+    
     parser = argparse.ArgumentParser(description="Fine-tune ProsusAI/finbert for emotion detection")
     parser.add_argument("--training-data", required=True, help="Path to training JSON file(s)")
     parser.add_argument("--output-dir", required=True, help="Output directory for models")
@@ -357,8 +364,23 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--clear-output", action="store_true", help="Clear output directory if it exists (prevents shape mismatch errors)")
     
     args = parser.parse_args()
+    
+    # Clear output directory if requested or if it exists and contains conflicting models
+    output_path = Path(args.output_dir)
+    if output_path.exists() and args.clear_output:
+        logger.warning(f"Clearing output directory: {output_path}")
+        shutil.rmtree(output_path)
+        output_path.mkdir(parents=True, exist_ok=True)
+    elif output_path.exists():
+        # Check if it contains model files that might cause conflicts
+        model_files = list(output_path.glob("**/pytorch_model.bin")) + list(output_path.glob("**/model.safetensors"))
+        if model_files:
+            logger.warning(f"Output directory exists and contains model files. This may cause shape mismatch errors.")
+            logger.warning(f"Use --clear-output to remove existing models and start fresh.")
+            logger.warning(f"Or delete the directory manually: {output_path}")
     
     # Load training data
     training_data = load_training_data(args.training_data)
