@@ -13,6 +13,9 @@ Usage:
   python generate_emotion_training_data.py \
       --output ./training_data/emotion \
       --examples 500
+  
+  Project and location are hardcoded (default: playpen-c84caa, us-central1)
+  Override with --project and --location if needed
 """
 
 import argparse
@@ -28,6 +31,11 @@ from typing import Dict, List, Optional
 from google.cloud import storage
 from vertexai import init as vertex_init
 from vertexai.generative_models import GenerativeModel
+
+# Hardcoded defaults (matches generate_sil_stage_datasets.py)
+DEFAULT_PROJECT = "playpen-c84caa"
+DEFAULT_LOCATION = "us-central1"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 PROMPT_TEMPLATE = """You are generating labelled training data for fine-tuning ProsusAI/finbert to detect emotion, distress, and vulnerability in financial queries.
 
@@ -439,10 +447,10 @@ def generate_batch(model: GenerativeModel, count: int) -> List[Dict]:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate emotion training data")
-    parser.add_argument("--project", default="playpen-c84caa", help="GCP project ID")
-    parser.add_argument("--location", default="us-central1", help="Vertex AI location")
+    parser.add_argument("--project", default=DEFAULT_PROJECT, help=f"GCP project ID (default: {DEFAULT_PROJECT})")
+    parser.add_argument("--location", default=DEFAULT_LOCATION, help=f"Vertex AI location (default: {DEFAULT_LOCATION})")
     parser.add_argument("--output", required=True, help="Output directory (local or gs://)")
-    parser.add_argument("--model", default="gemini-2.5-flash", help="Gemini model name")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Gemini model name (default: {DEFAULT_MODEL})")
     parser.add_argument("--examples", type=int, default=500, help="Number of examples to generate")
     
     args = parser.parse_args()
