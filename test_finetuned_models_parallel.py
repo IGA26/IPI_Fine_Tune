@@ -116,8 +116,18 @@ class FineTunedPredictor:
         emotion_path = Path(emotion_model_dir)
         if emotion_path.exists():
             for model_name in ["emotion", "distress", "vulnerability"]:
+                # Try subdirectory first (e.g., ./models/emotion/emotion/)
                 model_path = emotion_path / model_name
-                if model_path.exists():
+                
+                # If emotion model not found in subdirectory, try main directory (e.g., ./models/emotion/)
+                # This handles the case where emotion model is saved directly in output_dir
+                if model_name == "emotion" and not model_path.exists():
+                    # Check if model files are in the main directory
+                    if (emotion_path / "config.json").exists() and (emotion_path / "pytorch_model.bin").exists() or (emotion_path / "model.safetensors").exists():
+                        model_path = emotion_path
+                        logger.info(f"  Found emotion model directly in {emotion_path} (not in subdirectory)")
+                
+                if model_path.exists() and (model_path / "config.json").exists():
                     try:
                         load_start = time.time()
                         tokenizer = AutoTokenizer.from_pretrained(str(model_path))
@@ -130,17 +140,17 @@ class FineTunedPredictor:
                         self.model_load_times[model_name] = load_time
                         # Debug: Check model config
                         num_labels = model.config.num_labels
-                        logger.info(f"  Loaded {model_name} model ({load_time:.1f}ms) - num_labels: {num_labels}")
+                        logger.info(f"  Loaded {model_name} model from {model_path} ({load_time:.1f}ms) - num_labels: {num_labels}")
                         if model_name == "emotion" and num_labels != len(EMOTION_LABELS):
                             logger.warning(f"  WARNING: Emotion model has {num_labels} labels but expected {len(EMOTION_LABELS)}")
                     except Exception as e:
-                        logger.warning(f"  Failed to load {model_name} model: {e}")
+                        logger.warning(f"  Failed to load {model_name} model from {model_path}: {e}")
                 else:
-                    logger.warning(f"  Emotion model path does not exist: {model_path}")
+                    logger.warning(f"  Emotion model path does not exist or missing config.json: {model_path}")
         else:
             logger.warning(f"  Emotion model directory does not exist: {emotion_path}")
     
-    def predict_single_model(self, text: str, model_name: str, label_type: str, pre_tokenized: Optional[Dict] = None) -> Tuple[Dict, float]:
+    def predict_single_model(self, text: str, model_name: str, label_type: str, pre_tokenized: Optional[Dict] = None) -> Tuple[Optional[Dict], float]:
         """Predict using a single model and return result with timing.
         
         Args:
@@ -150,6 +160,11 @@ class FineTunedPredictor:
             pre_tokenized: Pre-tokenized inputs (optional, for optimization)
         """
         if model_name not in self.models:
+            logger.debug(f"Model {model_name} not found in loaded models. Available: {list(self.models.keys())}")
+            return None, 0.0
+        
+        if model_name not in self.tokenizers:
+            logger.debug(f"Tokenizer {model_name} not found in loaded tokenizers. Available: {list(self.tokenizers.keys())}")
             return None, 0.0
         
         start_time = time.time()
@@ -263,14 +278,27 @@ class FineTunedPredictor:
                     if result:
                         results[label_type] = result
                         timings[label_type] = round(inference_time, 2)
+                    else:
+                        logger.warning(f"No result from {model_name} (label_type: {label_type}) - model may not be loaded")
+                        timings[label_type] = 0.0
                 except Exception as e:
-                    logger.warning(f"Error in {model_name}: {e}")
+                    logger.error(f"Error predicting {model_name} ({label_type}): {e}", exc_info=True)
                     timings[label_type] = 0.0
+        
+        # Debug: Check which models were loaded
+        if "emotion" not in results:
+            logger.warning(f"Emotion prediction missing. Available models: {list(self.models.keys())}")
+            logger.warning(f"Available results: {list(results.keys())}")
         
         return results, timings
     
     def format_sil_output(self, results: Dict, timings: Dict) -> Dict:
         """Format results into SIL output structure."""
+        # Check if emotion result exists
+        emotion_result = results.get("emotion", {})
+        if not emotion_result:
+            logger.warning("Emotion result missing in format_sil_output. Results keys: " + str(list(results.keys())))
+        
         # Map fine-tuned results to SIL format
         sil_output = {
             "topic": results.get("topic", {}).get("label", "general"),
@@ -279,8 +307,8 @@ class FineTunedPredictor:
             "stage": results.get("stage", {}).get("label", "understanding"),
             "domain_scope": results.get("domain", {}).get("label", "general"),
             "advice_risk_score": self._convert_advice_risk_to_score(results.get("advice_risk", {})),
-            "detected_emotion": results.get("emotion", {}).get("label", "neutral"),
-            "sentiment_score": self._emotion_to_sentiment(results.get("emotion", {})),
+            "detected_emotion": emotion_result.get("label", "neutral") if emotion_result else "neutral",
+            "sentiment_score": self._emotion_to_sentiment(emotion_result) if emotion_result else 0.0,
             "distress_flag": results.get("distress", {}).get("flag", False),
             "vulnerability_flag": results.get("vulnerability", {}).get("flag", False),
             "confidence": {
