@@ -128,9 +128,17 @@ class FineTunedPredictor:
                         self.models[model_name] = model
                         load_time = (time.time() - load_start) * 1000
                         self.model_load_times[model_name] = load_time
-                        logger.info(f"  Loaded {model_name} model ({load_time:.1f}ms)")
+                        # Debug: Check model config
+                        num_labels = model.config.num_labels
+                        logger.info(f"  Loaded {model_name} model ({load_time:.1f}ms) - num_labels: {num_labels}")
+                        if model_name == "emotion" and num_labels != len(EMOTION_LABELS):
+                            logger.warning(f"  WARNING: Emotion model has {num_labels} labels but expected {len(EMOTION_LABELS)}")
                     except Exception as e:
                         logger.warning(f"  Failed to load {model_name} model: {e}")
+                else:
+                    logger.warning(f"  Emotion model path does not exist: {model_path}")
+        else:
+            logger.warning(f"  Emotion model directory does not exist: {emotion_path}")
     
     def predict_single_model(self, text: str, model_name: str, label_type: str, pre_tokenized: Optional[Dict] = None) -> Tuple[Dict, float]:
         """Predict using a single model and return result with timing.
@@ -170,10 +178,15 @@ class FineTunedPredictor:
             
             if label_type == "emotion":
                 labels = EMOTION_LABELS
+                # Debug: Check if we have the right number of labels
+                if len(labels) != logits.shape[1]:
+                    logger.warning(f"Emotion model output shape mismatch: expected {len(labels)} labels, got {logits.shape[1]} logits")
                 result = {
                     "label": labels[pred_idx],
                     "confidence": round(confidence, 4),
-                    "all_probs": {labels[i]: round(probs[0][i].item(), 4) for i in range(len(labels))}
+                    "all_probs": {labels[i]: round(probs[0][i].item(), 4) for i in range(len(labels))},
+                    "raw_logits": [round(logits[0][i].item(), 4) for i in range(len(labels))],  # Debug: show raw logits
+                    "pred_idx": pred_idx  # Debug: show prediction index
                 }
             elif label_type in ["distress", "vulnerability"]:
                 # Binary classification
@@ -340,7 +353,15 @@ def process_questions(questions: List[str], predictor: FineTunedPredictor) -> Li
         
         # Log summary
         logger.info(f"  Topic: {sil_output['topic']} ({sil_output['confidence']['topic']:.2%})")
-        logger.info(f"  Emotion: {sil_output['detected_emotion']} ({sil_output['confidence']['emotion']:.2%})")
+        emotion_info = sil_output.get('all_predictions', {}).get('emotion', {})
+        if emotion_info:
+            all_probs = emotion_info.get('all_probs', {})
+            logger.info(f"  Emotion: {sil_output['detected_emotion']} ({sil_output['confidence']['emotion']:.2%})")
+            logger.info(f"    Emotion probabilities: {all_probs}")
+            if 'raw_logits' in emotion_info:
+                logger.info(f"    Raw logits: {emotion_info['raw_logits']}")
+        else:
+            logger.warning(f"  Emotion prediction missing or failed!")
         logger.info(f"  Distress: {sil_output['distress_flag']} | Vulnerability: {sil_output['vulnerability_flag']}")
         logger.info(f"  Total time: {question_time:.1f}ms | Avg model time: {np.mean(list(timings.values())):.1f}ms")
         
