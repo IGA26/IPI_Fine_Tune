@@ -447,12 +447,6 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
         return None
     
     print(f"✅ Received {len(results)} prediction results\n")
-    
-    # Debug: Show what keys we have in results
-    print(f"   Debug: Results keys types and first few keys:")
-    for i, key in enumerate(list(results.keys())[:12]):
-        print(f"     {i+1}. Key: {key} (type: {type(key).__name__}), Value type: {type(results[key]).__name__}")
-    print()
     sys.stdout.flush()
     
     # Categorize by confidence
@@ -465,26 +459,17 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     sys.stdout.flush()
     
     # Filter SIL results - only process tuple keys (skip metadata keys like "_confidence_categories")
-    # Debug: Check what we're filtering
+    # Note: Keys might be ("SIL", ...) or ("sil", ...) - make case-insensitive
     all_tuple_keys = [k for k in results.keys() if isinstance(k, tuple)]
-    sil_tuple_keys = [k for k in all_tuple_keys if len(k) == 2 and k[0] == "sil"]
-    
-    print(f"   Debug: Total keys in results: {len(results)}")
-    print(f"   Debug: Tuple keys: {len(all_tuple_keys)}")
-    print(f"   Debug: SIL tuple keys found: {len(sil_tuple_keys)}")
-    if sil_tuple_keys:
-        print(f"   Debug: SIL keys: {sil_tuple_keys}")
-    print()
+    sil_tuple_keys = [k for k in all_tuple_keys if len(k) == 2 and str(k[0]).lower() == "sil"]
     
     sil_results = {k: v for k, v in results.items() if k in sil_tuple_keys}
     
     if not sil_results:
         print("⚠️  No SIL predictions available\n")
     else:
-        print(f"   Found {len(sil_results)} SIL predictions\n")
         for (category, label_type), result in sil_results.items():
             if result is None or result[0] is None:
-                print(f"   ⚠️  Skipping {label_type}: result is None or result[0] is None")
                 continue
             
             predicted_label, confidence, top3, inference_time, confidence_gap = result
@@ -518,22 +503,16 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     sys.stdout.flush()
     
     # Filter emotion results - only process tuple keys (skip metadata keys)
-    emotion_tuple_keys = [k for k in all_tuple_keys if len(k) == 2 and k[0] == "emotion"]
-    
-    print(f"   Debug: Emotion tuple keys found: {len(emotion_tuple_keys)}")
-    if emotion_tuple_keys:
-        print(f"   Debug: Emotion keys: {emotion_tuple_keys}")
-    print()
+    # Note: Keys might be ("Emotion", ...) or ("emotion", ...) - make case-insensitive
+    emotion_tuple_keys = [k for k in all_tuple_keys if len(k) == 2 and str(k[0]).lower() == "emotion"]
     
     emotion_results = {k: v for k, v in results.items() if k in emotion_tuple_keys}
     
     if not emotion_results:
         print("⚠️  No emotion predictions available\n")
     else:
-        print(f"   Found {len(emotion_results)} emotion predictions\n")
         for (category, model_name), result in emotion_results.items():
             if result is None or result[0] is None:
-                print(f"   ⚠️  Skipping {model_name}: result is None or result[0] is None")
                 continue
             
             predicted_value, confidence, top3, inference_time, confidence_gap = result
