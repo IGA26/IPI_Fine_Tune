@@ -616,10 +616,13 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
         if result is None or result[0] is None:
             continue
         
-        if category == "sil":
+        # Make category comparison case-insensitive (keys might be "SIL"/"sil" or "Emotion"/"emotion")
+        category_lower = str(category).lower()
+        
+        if category_lower == "sil":
             predicted_label, confidence, top3, inference_time, confidence_gap = result
             final_json[label_type] = predicted_label
-        elif category == "emotion":
+        elif category_lower == "emotion":
             predicted_value, confidence, top3, inference_time, confidence_gap = result
             if label_type == "severity":
                 # Regression - keep as float
