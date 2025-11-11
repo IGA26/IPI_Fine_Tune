@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 # Base model
 BASE_MODEL = "ProsusAI/finbert"
 
-# Emotion labels
-EMOTION_LABELS = ["positive", "neutral", "negative", "confused"]
+# Emotion labels (matches generate_emotion_training_data.py)
+EMOTION_LABELS = ["positive", "neutral", "negative"]
 
 
 def load_training_data(data_path: str) -> List[Dict]:
@@ -106,10 +106,20 @@ def encode_labels(example: Dict, emotion_mapping: Dict[str, int]) -> Dict:
     # Vulnerability flag (binary: 0 or 1)
     vulnerability_flag = 1 if example.get("vulnerability_flag", False) else 0
     
+    # Handover required (binary: 0 or 1)
+    handover_required = 1 if example.get("handover_required", False) else 0
+    
+    # Distress severity (regression: float 0.0-1.0)
+    distress_severity = float(example.get("distress_severity", 0.0))
+    # Clamp to valid range
+    distress_severity = max(0.0, min(1.0, distress_severity))
+    
     return {
         "labels_emotion": emotion_idx,
         "labels_distress": distress_flag,
         "labels_vulnerability": vulnerability_flag,
+        "labels_handover": handover_required,
+        "labels_severity": distress_severity,
     }
 
 
@@ -143,8 +153,33 @@ def compute_metrics(eval_pred, task: str = "emotion"):
             "accuracy": accuracy,
             "f1_macro": f1
         }
+    elif task == "regression":
+        # Regression task for distress_severity
+        # predictions is shape (batch_size, 1) for regression
+        if predictions.ndim > 1:
+            predictions = predictions.squeeze()
+        if labels.ndim > 1:
+            labels = labels.squeeze()
+        
+        # Mean Absolute Error (MAE)
+        mae = np.mean(np.abs(predictions - labels))
+        # Mean Squared Error (MSE)
+        mse = np.mean((predictions - labels) ** 2)
+        # Root Mean Squared Error (RMSE)
+        rmse = np.sqrt(mse)
+        # R-squared
+        ss_res = np.sum((labels - predictions) ** 2)
+        ss_tot = np.sum((labels - np.mean(labels)) ** 2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+        
+        return {
+            "mae": float(mae),
+            "mse": float(mse),
+            "rmse": float(rmse),
+            "r2": float(r2)
+        }
     else:
-        # Binary classification for distress/vulnerability
+        # Binary classification for distress/vulnerability/handover
         predictions = np.argmax(predictions, axis=1)
         accuracy = accuracy_score(labels, predictions)
         f1 = f1_score(labels, predictions, average='binary', zero_division=0)
@@ -270,10 +305,10 @@ def train_model(
     trainer.save_model()
     tokenizer.save_pretrained(output_dir)
     
-    # Now train separate binary classifiers for distress and vulnerability
+    # Now train separate binary classifiers for distress, vulnerability, and handover
     # We'll use the same base model but with 2 labels (binary classification)
     
-    for task_name, task_label in [("distress", "labels_distress"), ("vulnerability", "labels_vulnerability")]:
+    for task_name, task_label in [("distress", "labels_distress"), ("vulnerability", "labels_vulnerability"), ("handover", "labels_handover")]:
         logger.info(f"\nTraining {task_name} flag classifier...")
         
         # Create binary classification dataset
@@ -349,12 +384,90 @@ def train_model(
         task_trainer.save_model()
         tokenizer.save_pretrained(f"{output_dir}/{task_name}")
     
+    # Train distress_severity regression model
+    logger.info(f"\nTraining distress_severity regression model...")
+    
+    # Create regression dataset
+    severity_dataset = Dataset.from_list([
+        {
+            "text": ex["text"],
+            "labels": ex["labels_severity"]
+        }
+        for ex in processed_data
+    ])
+    
+    severity_dataset = severity_dataset.train_test_split(test_size=0.2, seed=seed)
+    severity_train = severity_dataset["train"]
+    severity_val = severity_dataset["test"]
+    
+    # Load fresh model for regression (num_labels=1 for regression)
+    severity_model = AutoModelForSequenceClassification.from_pretrained(
+        BASE_MODEL,
+        num_labels=1,  # Regression: single output
+        problem_type="regression",  # Specify regression problem type
+        ignore_mismatched_sizes=True
+    )
+    
+    # Tokenize (preserve label column)
+    severity_train_tokenized = severity_train.map(
+        lambda x: tokenize(x, tokenizer),
+        batched=True,
+        remove_columns=["text"]  # Keep "labels" column
+    )
+    severity_val_tokenized = severity_val.map(
+        lambda x: tokenize(x, tokenizer),
+        batched=True,
+        remove_columns=["text"]  # Keep "labels" column
+    )
+    
+    # Training arguments for regression
+    severity_training_args = TrainingArguments(
+        output_dir=f"{output_dir}/severity",
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        learning_rate=learning_rate,
+        weight_decay=0.01,
+        logging_dir=f"{output_dir}/severity/logs",
+        logging_steps=50,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="rmse",  # Lower is better for RMSE
+        greater_is_better=False,
+        seed=seed,
+    )
+    
+    # Trainer for regression
+    severity_trainer = Trainer(
+        model=severity_model,
+        args=severity_training_args,
+        train_dataset=severity_train_tokenized,
+        eval_dataset=severity_val_tokenized,
+        data_collator=data_collator,
+        compute_metrics=lambda eval_pred: compute_metrics(eval_pred, "regression"),
+    )
+    
+    # Train
+    severity_trainer.train()
+    
+    # Evaluate
+    severity_results = severity_trainer.evaluate()
+    logger.info(f"\nDistress Severity Regression Results:")
+    logger.info(json.dumps(severity_results, indent=2))
+    
+    # Save
+    severity_trainer.save_model()
+    tokenizer.save_pretrained(f"{output_dir}/severity")
+    
     logger.info(f"\n{'='*60}")
     logger.info("Training complete!")
     logger.info(f"Models saved to: {output_dir}")
-    logger.info(f"  - emotion/ (emotion classification)")
+    logger.info(f"  - emotion/ (emotion classification: positive/neutral/negative)")
     logger.info(f"  - distress/ (distress flag binary classifier)")
     logger.info(f"  - vulnerability/ (vulnerability flag binary classifier)")
+    logger.info(f"  - handover/ (handover_required binary classifier)")
+    logger.info(f"  - severity/ (distress_severity regression: 0.0-1.0)")
     logger.info(f"{'='*60}")
 
 
