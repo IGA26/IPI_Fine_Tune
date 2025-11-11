@@ -601,9 +601,24 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
         "speedup": float(sum(inference_times.values()) / total_time) if parallel and total_time > 0 and inference_times else 1.0,
     }
     
-    # Create simplified final JSON output with all 11 parameters
-    # Just parameter name and selected prediction value
+    # Create structured final JSON output with all 11 parameters
+    # Each parameter includes value and confidence_score
     final_json = {}
+    
+    # Define the order of parameters for consistent output (as requested by user)
+    parameter_order = [
+        "topic",
+        "stage",
+        "intent",
+        "query",
+        "advice_risk",
+        "domain",
+        "emotion",
+        "handover",
+        "distress",
+        "vulnerability",
+        "severity"
+    ]
     
     # Add SIL and emotion predictions
     # Only process keys that are tuples (category, label_type), skip metadata keys like "_confidence_categories"
@@ -621,21 +636,41 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
         
         if category_lower == "sil":
             predicted_label, confidence, top3, inference_time, confidence_gap = result
-            final_json[label_type] = predicted_label
+            final_json[label_type] = {
+                "value": predicted_label,
+                "confidence_score": float(confidence)
+            }
         elif category_lower == "emotion":
             predicted_value, confidence, top3, inference_time, confidence_gap = result
             if label_type == "severity":
-                # Regression - keep as float
-                final_json[label_type] = float(predicted_value)
+                # Regression - value is the predicted severity (float)
+                final_json[label_type] = {
+                    "value": float(predicted_value),
+                    "confidence_score": float(confidence)
+                }
             else:
-                # Classification - use the predicted label/value
-                final_json[label_type] = predicted_value
+                # Classification - value is the predicted label
+                final_json[label_type] = {
+                    "value": predicted_value,
+                    "confidence_score": float(confidence)
+                }
+    
+    # Reorder the JSON output to match the desired parameter order
+    ordered_json = {}
+    for param_name in parameter_order:
+        if param_name in final_json:
+            ordered_json[param_name] = final_json[param_name]
+    
+    # Add any remaining parameters that weren't in the ordered list (shouldn't happen, but just in case)
+    for param_name, param_data in final_json.items():
+        if param_name not in ordered_json:
+            ordered_json[param_name] = param_data
     
     # Display final JSON output
     print(f"{'='*60}")
     print("FINAL JSON OUTPUT:")
     print(f"{'='*60}")
-    print(json.dumps(final_json, indent=2))
+    print(json.dumps(ordered_json, indent=2))
     print()
     sys.stdout.flush()
     
