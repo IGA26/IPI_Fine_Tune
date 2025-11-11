@@ -445,6 +445,8 @@ def train_model(
 
 
 def main():
+    import shutil
+    
     parser = argparse.ArgumentParser(description="Fine-tune SIL classification model")
     parser.add_argument("--project", default="playpen-c84caa", help="GCP project ID")
     parser.add_argument("--location", default="us-central1", help="Vertex AI location")
@@ -455,8 +457,47 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--model", default=BASE_MODEL, help="Base model to fine-tune")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--clear-output", action="store_true", help="Clear output directory if it exists (prevents shape mismatch errors)")
     
     args = parser.parse_args()
+    
+    # Handle output directory clearing (only for local paths, not GCS)
+    output_path = Path(args.output_dir)
+    if not str(args.output_dir).startswith("gs://"):
+        if output_path.exists() and args.clear_output:
+            # Only clear SIL-specific subdirectories, not emotion or other directories
+            sil_subdirs = ["topic", "intent", "query", "stage", "domain", "advice_risk"]
+            cleared_dirs = []
+            for subdir in sil_subdirs:
+                subdir_path = output_path / subdir
+                if subdir_path.exists():
+                    logger.warning(f"Clearing SIL model directory: {subdir_path}")
+                    shutil.rmtree(subdir_path)
+                    cleared_dirs.append(subdir)
+            
+            # Also clear label_mappings.json if it exists
+            label_map_file = output_path / "label_mappings.json"
+            if label_map_file.exists():
+                logger.warning(f"Clearing label mappings: {label_map_file}")
+                label_map_file.unlink()
+            
+            if cleared_dirs:
+                logger.info(f"Cleared SIL model directories: {', '.join(cleared_dirs)}")
+                logger.info(f"NOTE: Emotion models in '{output_path / 'emotion'}' were NOT touched.")
+            else:
+                logger.info(f"No existing SIL model directories found to clear.")
+            
+            # Ensure output directory exists
+            output_path.mkdir(parents=True, exist_ok=True)
+        elif output_path.exists():
+            # Check if it contains SIL model files that might cause conflicts
+            sil_subdirs = ["topic", "intent", "query", "stage", "domain", "advice_risk"]
+            existing_sil_dirs = [d for d in sil_subdirs if (output_path / d).exists()]
+            if existing_sil_dirs:
+                logger.warning(f"Output directory exists and contains SIL model directories: {', '.join(existing_sil_dirs)}")
+                logger.warning(f"This may cause shape mismatch errors.")
+                logger.warning(f"Use --clear-output to remove existing SIL models and start fresh.")
+                logger.warning(f"NOTE: This will only clear SIL model directories - emotion models are safe.")
     
     # Load training data
     data_dir = Path(args.training_data)
