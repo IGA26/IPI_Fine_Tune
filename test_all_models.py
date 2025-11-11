@@ -524,9 +524,15 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     # Just parameter name and selected prediction value
     final_json = {}
     
-    # Add SIL predictions
-    for (category, label_type), result in results.items():
-        if category == "_" or result is None or result[0] is None:
+    # Add SIL and emotion predictions
+    # Only process keys that are tuples (category, label_type), skip metadata keys like "_confidence_categories"
+    for key, result in results.items():
+        # Skip metadata keys (strings starting with "_")
+        if not isinstance(key, tuple) or len(key) != 2:
+            continue
+        
+        category, label_type = key
+        if result is None or result[0] is None:
             continue
         
         if category == "sil":
@@ -603,11 +609,14 @@ def main():
         # Convert results to JSON-serializable format
         json_results = {}
         for key, value in results.items():
-            if key.startswith("_"):
-                json_results[key] = value
-            else:
-                category, label_type = key
-                if value and value[0] is not None:
+            # Skip metadata keys (strings starting with "_") or non-tuple keys
+            if not isinstance(key, tuple) or len(key) != 2:
+                if isinstance(key, str) and key.startswith("_"):
+                    json_results[key] = value
+                continue
+            
+            category, label_type = key
+            if value and value[0] is not None:
                     if isinstance(value[0], float):
                         # Regression
                         json_results[f"{category}_{label_type}"] = {
@@ -642,11 +651,14 @@ def main():
                     print("="*60)
                     json_results = {}
                     for key, value in results.items():
-                        if key.startswith("_"):
-                            json_results[key] = value
-                        else:
-                            category, label_type = key
-                            if value and value[0] is not None:
+                        # Skip metadata keys (strings starting with "_") or non-tuple keys
+                        if not isinstance(key, tuple) or len(key) != 2:
+                            if isinstance(key, str) and key.startswith("_"):
+                                json_results[key] = value
+                            continue
+                        
+                        category, label_type = key
+                        if value and value[0] is not None:
                                 if isinstance(value[0], float):
                                     json_results[f"{category}_{label_type}"] = {
                                         "prediction": value[0],
