@@ -119,7 +119,16 @@ def load_emotion_model(model_dir: Path, model_name: str):
     
     try:
         tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        model = AutoModelForSequenceClassification.from_pretrained(str(model_path))
+        
+        # Handle regression model (severity) differently
+        if model_name == "severity":
+            model = AutoModelForSequenceClassification.from_pretrained(
+                str(model_path),
+                num_labels=1,
+                problem_type="regression"
+            )
+        else:
+            model = AutoModelForSequenceClassification.from_pretrained(str(model_path))
         
         # Set to eval mode
         model.eval()
@@ -131,6 +140,8 @@ def load_emotion_model(model_dir: Path, model_name: str):
         return model, tokenizer
     except Exception as e:
         print(f"Error loading emotion {model_name} model: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return None, None
 
 
@@ -139,25 +150,31 @@ def predict_classification(model, tokenizer, text: str, label_type: str, label_m
     if model is None or tokenizer is None:
         return None, None, None, None, None
     
-    start_time = time.time()
-    
-    # Tokenize
-    inputs = tokenizer(
-        text,
-        truncation=True,
-        padding="max_length",
-        max_length=128,
-        return_tensors="pt"
-    )
-    
-    # Move to device
-    device = next(model.parameters()).device
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    
-    # Predict
-    with torch.no_grad():
-        outputs = model(**inputs)
-        logits = outputs.logits
+    try:
+        start_time = time.time()
+        
+        # Tokenize
+        inputs = tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=128,
+            return_tensors="pt"
+        )
+        
+        # Move to device
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        # Predict
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits
+    except Exception as e:
+        print(f"⚠️  Error in predict_classification for {label_type}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return None, None, None, None, None
     
     if is_regression:
         # Regression model (severity) - returns continuous value
@@ -189,6 +206,11 @@ def predict_classification(model, tokenizer, text: str, label_type: str, label_m
         elif len(label_mapping) > 0:
             # Use first available label list
             labels = list(label_mapping.values())[0]
+        
+        if not labels:
+            print(f"⚠️  Warning: No labels found for {label_type} in label_mapping: {label_mapping}", file=sys.stderr)
+            # Fallback: use indices as labels
+            labels = [str(i) for i in range(len(probs))]
         
         predicted_label = labels[pred_idx] if pred_idx < len(labels) else "unknown"
         
@@ -253,25 +275,31 @@ def load_all_models(model_dir: Path):
     emotion_models = {}
     emotion_tokenizers = {}
     
-    print("Loading SIL models...", file=sys.stderr)
+    print("Loading SIL models...")
+    sys.stdout.flush()
     for label_type in ["topic", "intent", "query", "stage", "domain", "advice_risk"]:
         model, tokenizer = load_sil_model(model_dir, label_type)
         if model is not None:
             sil_models[label_type] = model
             sil_tokenizers[label_type] = tokenizer
-            print(f"✅ Loaded SIL {label_type} model", file=sys.stderr)
+            print(f"✅ Loaded SIL {label_type} model")
+            sys.stdout.flush()
         else:
-            print(f"⚠️  SIL {label_type} model not found, skipping", file=sys.stderr)
+            print(f"⚠️  SIL {label_type} model not found, skipping")
+            sys.stdout.flush()
     
-    print("\nLoading emotion models...", file=sys.stderr)
+    print("\nLoading emotion models...")
+    sys.stdout.flush()
     # Emotion classification model (directly in emotion/ directory)
     model, tokenizer = load_emotion_model(model_dir, "emotion")
     if model is not None:
         emotion_models["emotion"] = model
         emotion_tokenizers["emotion"] = tokenizer
-        print(f"✅ Loaded emotion classification model", file=sys.stderr)
+        print(f"✅ Loaded emotion classification model")
+        sys.stdout.flush()
     else:
-        print(f"⚠️  Emotion classification model not found, skipping", file=sys.stderr)
+        print(f"⚠️  Emotion classification model not found, skipping")
+        sys.stdout.flush()
     
     # Other emotion models (in subdirectories)
     for model_name in ["distress", "vulnerability", "handover", "severity"]:
@@ -279,16 +307,20 @@ def load_all_models(model_dir: Path):
         if model is not None:
             emotion_models[model_name] = model
             emotion_tokenizers[model_name] = tokenizer
-            print(f"✅ Loaded emotion {model_name} model", file=sys.stderr)
+            print(f"✅ Loaded emotion {model_name} model")
+            sys.stdout.flush()
         else:
-            print(f"⚠️  Emotion {model_name} model not found, skipping", file=sys.stderr)
+            print(f"⚠️  Emotion {model_name} model not found, skipping")
+            sys.stdout.flush()
     
     if not sil_models and not emotion_models:
-        print("\n❌ No models found! Check --model-dir path.", file=sys.stderr)
+        print("\n❌ No models found! Check --model-dir path.")
+        sys.stdout.flush()
         return None, None, None, None
     
-    print(f"\nDevice: {'GPU' if torch.cuda.is_available() else 'CPU'}", file=sys.stderr)
-    print(f"✅ All models loaded and ready for inference\n", file=sys.stderr)
+    print(f"\nDevice: {'GPU' if torch.cuda.is_available() else 'CPU'}")
+    print(f"✅ All models loaded and ready for inference\n")
+    sys.stdout.flush()
     
     return sil_models, sil_tokenizers, emotion_models, emotion_tokenizers
 
@@ -340,6 +372,18 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
         all_is_regression[("emotion", model_name)] = is_regression
         all_categories[("emotion", model_name)] = "Emotion"
     
+    # Check if we have any models to run
+    if not all_models:
+        print("❌ No models available for prediction!")
+        print(f"   SIL models loaded: {len(sil_models)}")
+        print(f"   Emotion models loaded: {len(emotion_models)}")
+        return None
+    
+    print(f"Running predictions on {len(all_models)} models...")
+    print(f"   - SIL models: {len(sil_models)}")
+    print(f"   - Emotion models: {len(emotion_models)}\n")
+    sys.stdout.flush()
+    
     # Run predictions with timing
     total_start = time.time()
     results = {}
@@ -370,8 +414,12 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
                         results[key] = result
                         if result[3] is not None:  # inference_time
                             inference_times[key] = result[3]
+                    else:
+                        print(f"⚠️  No result for {key}: {result}", file=sys.stderr)
                 except Exception as e:
-                    print(f"⚠️  Error in parallel prediction: {e}", file=sys.stderr)
+                    print(f"⚠️  Error in parallel prediction for {futures[future]}: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc()
     else:
         # Sequential execution
         for key in all_models.keys():
@@ -391,6 +439,16 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     
     total_time = (time.time() - total_start) * 1000  # Convert to milliseconds
     
+    # Check if we got any results
+    if not results:
+        print("❌ No prediction results returned!")
+        print(f"   Models attempted: {len(all_models)}")
+        print(f"   Results received: {len(results)}")
+        return None
+    
+    print(f"✅ Received {len(results)} prediction results\n")
+    sys.stdout.flush()
+    
     # Categorize by confidence
     confident, medium, uncertain = categorize_by_confidence(results, high_threshold, low_threshold)
     
@@ -398,74 +456,86 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     print(f"{'='*60}")
     print("SIL PREDICTIONS:")
     print(f"{'='*60}\n")
+    sys.stdout.flush()
     
     sil_results = {k: v for k, v in results.items() if k[0] == "sil"}
-    for (category, label_type), result in sil_results.items():
-        if result is None or result[0] is None:
-            continue
-        
-        predicted_label, confidence, top3, inference_time, confidence_gap = result
-        
-        # Determine confidence category
-        if (category, label_type) in confident:
-            status = "✅"
-        elif (category, label_type) in uncertain:
-            status = "❌"
-        else:
-            status = "⚠️"
-        
-        print(f"{status} {label_type.upper()}:")
-        print(f"   Prediction: {predicted_label}")
-        print(f"   Confidence: {confidence:.2%}")
-        if confidence_gap is not None:
-            print(f"   Confidence Gap: {confidence_gap:.2%} (vs 2nd place)")
-        if inference_time is not None:
-            print(f"   Inference Time: {inference_time:.2f} ms")
-        if top3:
-            print(f"   Top 3:")
-            for i, top in enumerate(top3, 1):
-                marker = "👈" if i == 1 else ""
-                print(f"     {i}. {top['label']}: {top['confidence']:.2%} {marker}")
-        print()
     
-    print(f"{'='*60}")
-    print("EMOTION PREDICTIONS:")
-    print(f"{'='*60}\n")
-    
-    emotion_results = {k: v for k, v in results.items() if k[0] == "emotion"}
-    for (category, model_name), result in emotion_results.items():
-        if result is None or result[0] is None:
-            continue
-        
-        predicted_value, confidence, top3, inference_time, confidence_gap = result
-        
-        # Determine confidence category
-        if (category, model_name) in confident:
-            status = "✅"
-        elif (category, model_name) in uncertain:
-            status = "❌"
-        else:
-            status = "⚠️"
-        
-        print(f"{status} {model_name.upper()}:")
-        if model_name == "severity":
-            # Regression output
-            print(f"   Predicted Severity: {predicted_value:.3f} (0.0-1.0)")
-            print(f"   Confidence: {confidence:.2%}")
-        else:
-            # Classification output
-            print(f"   Prediction: {predicted_value}")
+    if not sil_results:
+        print("⚠️  No SIL predictions available\n")
+    else:
+        for (category, label_type), result in sil_results.items():
+            if result is None or result[0] is None:
+                continue
+            
+            predicted_label, confidence, top3, inference_time, confidence_gap = result
+            
+            # Determine confidence category
+            if (category, label_type) in confident:
+                status = "✅"
+            elif (category, label_type) in uncertain:
+                status = "❌"
+            else:
+                status = "⚠️"
+            
+            print(f"{status} {label_type.upper()}:")
+            print(f"   Prediction: {predicted_label}")
             print(f"   Confidence: {confidence:.2%}")
             if confidence_gap is not None:
                 print(f"   Confidence Gap: {confidence_gap:.2%} (vs 2nd place)")
+            if inference_time is not None:
+                print(f"   Inference Time: {inference_time:.2f} ms")
             if top3:
                 print(f"   Top 3:")
                 for i, top in enumerate(top3, 1):
                     marker = "👈" if i == 1 else ""
                     print(f"     {i}. {top['label']}: {top['confidence']:.2%} {marker}")
-        if inference_time is not None:
-            print(f"   Inference Time: {inference_time:.2f} ms")
-        print()
+            print()
+    sys.stdout.flush()
+    
+    print(f"{'='*60}")
+    print("EMOTION PREDICTIONS:")
+    print(f"{'='*60}\n")
+    sys.stdout.flush()
+    
+    emotion_results = {k: v for k, v in results.items() if k[0] == "emotion"}
+    
+    if not emotion_results:
+        print("⚠️  No emotion predictions available\n")
+    else:
+        for (category, model_name), result in emotion_results.items():
+            if result is None or result[0] is None:
+                continue
+            
+            predicted_value, confidence, top3, inference_time, confidence_gap = result
+            
+            # Determine confidence category
+            if (category, model_name) in confident:
+                status = "✅"
+            elif (category, model_name) in uncertain:
+                status = "❌"
+            else:
+                status = "⚠️"
+            
+            print(f"{status} {model_name.upper()}:")
+            if model_name == "severity":
+                # Regression output
+                print(f"   Predicted Severity: {predicted_value:.3f} (0.0-1.0)")
+                print(f"   Confidence: {confidence:.2%}")
+            else:
+                # Classification output
+                print(f"   Prediction: {predicted_value}")
+                print(f"   Confidence: {confidence:.2%}")
+                if confidence_gap is not None:
+                    print(f"   Confidence Gap: {confidence_gap:.2%} (vs 2nd place)")
+                if top3:
+                    print(f"   Top 3:")
+                    for i, top in enumerate(top3, 1):
+                        marker = "👈" if i == 1 else ""
+                        print(f"     {i}. {top['label']}: {top['confidence']:.2%} {marker}")
+            if inference_time is not None:
+                print(f"   Inference Time: {inference_time:.2f} ms")
+            print()
+    sys.stdout.flush()
     
     # Confidence summary
     print(f"{'='*60}")
@@ -492,6 +562,7 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     print(f"{'='*60}")
     print("TIMING SUMMARY:")
     print(f"{'='*60}")
+    sys.stdout.flush()
     print(f"⏱️  TOTAL TIME: {total_time:.2f} ms ({total_time/1000:.3f} seconds)")
     if inference_times:
         sum_individual = sum(inference_times.values())
@@ -503,6 +574,7 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
         print(f"   Fastest: {min(inference_times.values()):.2f} ms ({min(inference_times, key=inference_times.get)})")
         print(f"   Slowest: {max(inference_times.values()):.2f} ms ({max(inference_times, key=inference_times.get)})")
     print()
+    sys.stdout.flush()
     
     # Add confidence categorization to results
     results["_confidence_categories"] = {
@@ -553,6 +625,7 @@ def test_sentence(sil_models: dict, sil_tokenizers: dict, emotion_models: dict, 
     print(f"{'='*60}")
     print(json.dumps(final_json, indent=2))
     print()
+    sys.stdout.flush()
     
     # Return structured output
     return results
@@ -584,15 +657,23 @@ def main():
     
     # Load all models once at startup
     sil_models, sil_tokenizers, emotion_models, emotion_tokenizers = load_all_models(model_dir)
-    if sil_models is None and emotion_models is None:
+    if (sil_models is None or len(sil_models) == 0) and (emotion_models is None or len(emotion_models) == 0):
+        print("\n❌ Error: No models were loaded successfully!")
+        print(f"   Please check that your model directory '{model_dir}' contains:")
+        print(f"   - SIL models in subdirectories: topic/, intent/, query/, stage/, domain/, advice_risk/")
+        print(f"   - Emotion models in: emotion/ (and emotion/distress/, emotion/vulnerability/, etc.)")
         sys.exit(1)
+    
+    print(f"\n✅ Successfully loaded {len(sil_models) if sil_models else 0} SIL models and {len(emotion_models) if emotion_models else 0} emotion models")
+    sys.stdout.flush()
     
     # Get text input
     if args.text:
         text = args.text
     else:
         # Interactive mode
-        print("Enter text to classify (or 'quit' to exit):")
+        print("\nEnter text to classify (or 'quit' to exit):")
+        sys.stdout.flush()
         text = input("> ").strip()
         if text.lower() in ['quit', 'exit', 'q']:
             return
@@ -600,6 +681,10 @@ def main():
     # Run prediction
     results = test_sentence(sil_models, sil_tokenizers, emotion_models, emotion_tokenizers,
                            text, args.high_threshold, args.low_threshold, parallel=args.parallel)
+    
+    if results is None:
+        print("\n❌ Prediction failed - no results returned")
+        sys.exit(1)
     
     # JSON output if requested
     if args.json and results:
