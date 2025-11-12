@@ -3,8 +3,9 @@
 convert_training_data_to_csv.py
 
 Convert training data JSON files to CSV format.
-For a given topic (e.g., "savings"), finds all JSON files in that topic's directory,
-extracts the training_data array from each, and combines them into a single CSV file.
+For a given topic (e.g., "savings"), finds all JSON files in that topic's directory (including
+stage subdirectories when --recursive is used), extracts the training_data array from each,
+and combines them into a single CSV file.
 
 Usage:
   # Convert all JSON files for a specific topic
@@ -25,6 +26,13 @@ Usage:
       --topic savings \
       --files savings_training_data_20251021_130708.json \
       --output ./training_data/savings/savings_specific.csv
+
+  # Skip recursive search (only top-level JSON files)
+  python convert_training_data_to_csv.py \
+      --input-dir ./training_data \
+      --topic savings \
+      --no-recursive \
+      --output ./training_data/savings/savings_top_level.csv
 """
 
 import argparse
@@ -70,7 +78,8 @@ def convert_to_csv(
     topic: str = None,
     all_topics: bool = False,
     specific_files: List[str] = None,
-    output_path: Path = None
+    output_path: Path = None,
+    recursive: bool = True,
 ):
     """
     Convert training data JSON files to CSV.
@@ -90,10 +99,19 @@ def convert_to_csv(
             sys.exit(1)
         
         print(f"Found {len(topic_dirs)} topic directories")
+        if output_path is None:
+            output_dir = input_dir
+        else:
+            output_dir = output_path
+            if output_dir.exists() and not output_dir.is_dir():
+                print(f"❌ Error: Output path for --all-topics must be a directory: {output_dir}", file=sys.stderr)
+                sys.exit(1)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
         for topic_dir in sorted(topic_dirs):
             topic_name = topic_dir.name
-            output_file = output_path / f"{topic_name}_all.csv" if output_path.is_dir() else output_path
-            convert_topic_to_csv(topic_dir, topic_name, output_file)
+            output_file = (output_dir / f"{topic_name}_all.csv")
+            convert_topic_to_csv(topic_dir, topic_name, output_file, specific_files=None, recursive=recursive)
     else:
         if not topic:
             print("❌ Error: Must specify either --topic or --all-topics", file=sys.stderr)
@@ -105,39 +123,58 @@ def convert_to_csv(
             sys.exit(1)
         
         if output_path is None:
-            output_path = topic_dir / f"{topic}_all.csv"
-        
-        convert_topic_to_csv(topic_dir, topic, output_path, specific_files)
+            output_file = topic_dir / f"{topic}_all.csv"
+        else:
+            if output_path.exists() and output_path.is_dir():
+                output_file = output_path / f"{topic}_all.csv"
+            elif output_path.suffix == "":
+                output_path.mkdir(parents=True, exist_ok=True)
+                output_file = output_path / f"{topic}_all.csv"
+            else:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_file = output_path
+        convert_topic_to_csv(topic_dir, topic, output_file, specific_files, recursive)
 
 
 def convert_topic_to_csv(
     topic_dir: Path,
     topic_name: str,
     output_path: Path,
-    specific_files: List[str] = None
+    specific_files: List[str] = None,
+    recursive: bool = True,
 ):
     """Convert all JSON files for a specific topic to CSV."""
-    # Find all JSON files in the topic directory
+    # Find all JSON files in the topic directory (optionally recursive)
     if specific_files:
-        json_files = [topic_dir / f for f in specific_files if (topic_dir / f).exists()]
+        json_files = []
+        for file_name in specific_files:
+            file_path = topic_dir / Path(file_name)
+            if file_path.exists():
+                json_files.append(file_path)
+            else:
+                print(f"⚠️  Warning: Specified file not found: {file_path}", file=sys.stderr)
         if not json_files:
             print(f"❌ Error: None of the specified files found in {topic_dir}", file=sys.stderr)
             sys.exit(1)
     else:
-        json_files = sorted(topic_dir.glob("*.json"))
+        if recursive:
+            json_files = sorted(topic_dir.rglob("*.json"))
+        else:
+            json_files = sorted(topic_dir.glob("*.json"))
         if not json_files:
             print(f"⚠️  Warning: No JSON files found in {topic_dir}", file=sys.stderr)
             return
     
     print(f"\n📁 Processing topic: {topic_name}")
-    print(f"   Found {len(json_files)} JSON file(s)")
+    print(f"   Found {len(json_files)} JSON file(s){' (recursive)' if recursive else ''}")
     
     # Load all examples from all JSON files
     all_examples = []
     total_examples = 0
     
     for json_file in json_files:
-        print(f"   Loading: {json_file.name}...", end=" ", flush=True)
+        relative_name = json_file.relative_to(topic_dir)
+        print(f"   Loading: {relative_name}...", end=" ", flush=True)
         examples = load_json_file(json_file)
         all_examples.extend(examples)
         total_examples += len(examples)
@@ -226,6 +263,22 @@ Examples:
     )
     
     parser.add_argument(
+        "--recursive",
+        dest="recursive",
+        action="store_true",
+        help="Recursively search topic subdirectories for JSON files (default)"
+    )
+
+    parser.add_argument(
+        "--no-recursive",
+        dest="recursive",
+        action="store_false",
+        help="Only look for JSON files directly under the topic directory"
+    )
+
+    parser.set_defaults(recursive=True)
+
+    parser.add_argument(
         "--output",
         type=Path,
         help="Output CSV file path (or directory if --all-topics). Default: {topic_dir}/{topic}_all.csv"
@@ -249,7 +302,8 @@ Examples:
             topic=args.topic,
             all_topics=args.all_topics,
             specific_files=args.files,
-            output_path=args.output
+            output_path=args.output,
+            recursive=args.recursive
         )
         print("\n✅ Conversion complete!")
     except Exception as e:
