@@ -225,7 +225,7 @@ async def generate_example():
             generate_kwargs = {
                 "generation_config": {
                     "temperature": float(os.environ.get("VERTEX_TEMPERATURE", "0.8")),
-                    "max_output_tokens": int(os.environ.get("VERTEX_MAX_TOKENS", "128")),  # Increased from 64
+                    "max_output_tokens": int(os.environ.get("VERTEX_MAX_TOKENS", "256")),  # Increased to ensure complete JSON
                 },
             }
             # Only add safety_settings if we have them
@@ -255,7 +255,7 @@ async def generate_example():
             raw_text = response.text.strip()
             
             # Debug: log what Vertex returned
-            print(f"🔍 Vertex raw response: {raw_text[:200]}...", flush=True)
+            print(f"🔍 Vertex raw response (full): {raw_text}", flush=True)
             
             # Try to clean and parse JSON
             payload = None
@@ -267,29 +267,74 @@ async def generate_example():
                 json_lines = []
                 in_code_block = False
                 for line in lines:
-                    if line.strip().startswith("```"):
+                    stripped = line.strip()
+                    if stripped.startswith("```"):
                         in_code_block = not in_code_block
                         continue
                     if in_code_block:
                         json_lines.append(line)
+                
                 if json_lines:
                     raw_text = "\n".join(json_lines).strip()
+                else:
+                    # Markdown block started but no content extracted - remove the opening ``` line
+                    # This handles cases like "```json\n{" where there's no closing ```
+                    raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+                    # Remove first line if it's just the opening markdown
+                    if "\n" in raw_text:
+                        parts = raw_text.split("\n", 1)
+                        if parts[0].strip() == "":
+                            raw_text = parts[1] if len(parts) > 1 else raw_text
+                    print(f"🔍 After markdown removal: {raw_text}", flush=True)
             
             # Step 2: Try direct JSON parse
             try:
                 payload = json.loads(raw_text)
-            except json.JSONDecodeError:
-                # Step 3: Extract JSON between braces
+            except json.JSONDecodeError as e:
+                print(f"⚠️  Direct JSON parse failed: {e}", flush=True)
+                # Step 3: Extract JSON between braces (even if incomplete)
                 start = raw_text.find("{")
-                end = raw_text.rfind("}")
-                if start != -1 and end != -1 and end > start:
-                    json_str = raw_text[start : end + 1]
-                    try:
-                        payload = json.loads(json_str)
-                    except json.JSONDecodeError as e:
-                        print(f"⚠️  JSON extraction failed: {e}", flush=True)
-                        print(f"   Extracted JSON string: {json_str[:200]}...", flush=True)
-                        raise
+                if start != -1:
+                    # Find the matching closing brace, or use the last one
+                    end = raw_text.rfind("}")
+                    if end == -1 or end <= start:
+                        # No closing brace found - response might be incomplete
+                        print(f"⚠️  Incomplete JSON detected (no closing brace). Raw text: {raw_text}", flush=True)
+                        # Try to find end of last complete property
+                        # Look for patterns like "text": "..." or "topic": "..."
+                        import re
+                        # Try to extract what we can
+                        topic_match = re.search(r'"topic"\s*:\s*"([^"]*)"', raw_text, re.IGNORECASE)
+                        text_match = re.search(r'"text"\s*:\s*"([^"]*)"', raw_text, re.IGNORECASE)
+                        
+                        if topic_match and text_match:
+                            payload = {
+                                "topic": topic_match.group(1),
+                                "text": text_match.group(1)
+                            }
+                            print(f"✅ Reconstructed JSON from regex: {payload}", flush=True)
+                        else:
+                            raise ValueError(f"Incomplete JSON response. Expected complete JSON but got: {raw_text[:200]}")
+                    else:
+                        json_str = raw_text[start : end + 1]
+                        print(f"🔍 Extracted JSON string: {json_str}", flush=True)
+                        try:
+                            payload = json.loads(json_str)
+                        except json.JSONDecodeError as e2:
+                            print(f"⚠️  JSON extraction failed: {e2}", flush=True)
+                            # Last resort: try regex extraction
+                            import re
+                            topic_match = re.search(r'"topic"\s*:\s*"([^"]+)"', json_str, re.IGNORECASE)
+                            text_match = re.search(r'"text"\s*:\s*"([^"]+)"', json_str, re.IGNORECASE)
+                            
+                            if topic_match and text_match:
+                                payload = {
+                                    "topic": topic_match.group(1),
+                                    "text": text_match.group(1)
+                                }
+                                print(f"✅ Reconstructed JSON from regex: {payload}", flush=True)
+                            else:
+                                raise ValueError(f"Could not parse JSON. Extracted: {json_str[:200]}")
                 else:
                     raise ValueError(f"No JSON object found in response: {raw_text[:200]}")
 
