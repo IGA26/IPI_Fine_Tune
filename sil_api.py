@@ -129,11 +129,27 @@ def _get_vertex_model() -> GenerativeModel:
 GENERATE_PROMPT = f"""
 Create a short UK banking customer question for testing.
 
-1. Pick one topic: {", ".join(SIL_TOPICS)}
-2. Write a simple question (5-15 words) about that topic.
-3. Return JSON only: {{"topic": "topic_name", "text": "the question"}}
+IMPORTANT: Randomly select a DIFFERENT topic each time from this list:
+{", ".join(SIL_TOPICS)}
 
-Example: {{"topic": "savings", "text": "How do I open an ISA?"}}
+Write a simple question (5-15 words) about the randomly chosen topic.
+
+Return ONLY valid JSON: {{"topic": "chosen_topic", "text": "the question"}}
+
+Examples (use DIFFERENT topics each time):
+{{"topic": "savings", "text": "How do I open an ISA?"}}
+{{"topic": "pensions", "text": "What is a SIPP?"}}
+{{"topic": "investments", "text": "Can I invest in stocks?"}}
+{{"topic": "mortgages", "text": "How much can I borrow?"}}
+{{"topic": "banking", "text": "How do I check my balance?"}}
+{{"topic": "loans", "text": "What is the interest rate?"}}
+{{"topic": "debt", "text": "How can I manage my debt?"}}
+{{"topic": "insurance", "text": "Do I need life insurance?"}}
+{{"topic": "taxation", "text": "What is my tax allowance?"}}
+{{"topic": "general", "text": "What services do you offer?"}}
+{{"topic": "off_topic", "text": "What is the weather today?"}}
+
+CRITICAL: Pick a RANDOM topic, not always the same one. Vary your selection.
 """.strip()
 
 
