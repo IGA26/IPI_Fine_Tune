@@ -25,10 +25,13 @@ from sil_inference import GibberishInputError, SILInferenceService, _parse_env_f
 
 try:
     import vertexai
-    from vertexai.preview.generative_models import GenerativeModel
+    from vertexai.preview.generative_models import GenerativeModel, SafetySetting, HarmCategory, HarmBlockThreshold
 except ImportError:  # pragma: no cover - optional dependency
     vertexai = None  # type: ignore
     GenerativeModel = None  # type: ignore
+    SafetySetting = None  # type: ignore
+    HarmCategory = None  # type: ignore
+    HarmBlockThreshold = None  # type: ignore
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -193,22 +196,45 @@ async def generate_example():
             model = _get_vertex_model()
             
             # Configure safety settings to allow financial content
-            # BLOCK_NONE = 1, BLOCK_ONLY_HIGH = 2, BLOCK_MEDIUM_AND_ABOVE = 3, BLOCK_LOW_AND_ABOVE = 4
-            safety_settings = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            ]
+            # Use SafetySetting objects (not dictionaries)
+            if SafetySetting and HarmCategory and HarmBlockThreshold:
+                safety_settings = [
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    ),
+                ]
+            else:
+                # Fallback: no safety settings if imports failed
+                safety_settings = None
             
             print(f"📤 Sending request to Vertex AI...", flush=True)
-            response = model.generate_content(
-                GENERATE_PROMPT,
-                generation_config={
+            # Build generate_content arguments
+            generate_kwargs = {
+                "generation_config": {
                     "temperature": float(os.environ.get("VERTEX_TEMPERATURE", "0.8")),
                     "max_output_tokens": int(os.environ.get("VERTEX_MAX_TOKENS", "128")),  # Increased from 64
                 },
-                safety_settings=safety_settings,
+            }
+            # Only add safety_settings if we have them
+            if safety_settings is not None:
+                generate_kwargs["safety_settings"] = safety_settings
+            
+            response = model.generate_content(
+                GENERATE_PROMPT,
+                **generate_kwargs,
             )
             print(f"✅ Vertex AI response received", flush=True)
             
