@@ -124,19 +124,13 @@ def _get_vertex_model() -> GenerativeModel:
 
 
 GENERATE_PROMPT = f"""
-You are creating short UK retail-finance utterances for testing a classification system.
+Create a short UK banking customer question for testing.
 
-Instructions:
-1. Choose exactly one topic at random from this list:
-   {", ".join(SIL_TOPICS)}
-2. Write a concise first-person message (5-20 words) that matches the chosen topic.
-   • If the topic is "off_topic", ensure the message is clearly unrelated to money or finance.
-   • For financial topics, keep the language conversational and realistic (UK context).
-3. Respond with ONLY valid JSON on a single line. Use double quotes for strings. Escape any quotes in the text field.
-   Format: {{"topic": "chosen_topic", "text": "user_message"}}
-   Example: {{"topic": "savings", "text": "How do I open an ISA account?"}}
+1. Pick one topic: {", ".join(SIL_TOPICS)}
+2. Write a simple question (5-15 words) about that topic.
+3. Return JSON only: {{"topic": "topic_name", "text": "the question"}}
 
-CRITICAL: Return ONLY the JSON object, no markdown, no code blocks, no explanation. Ensure all strings are properly escaped.
+Example: {{"topic": "savings", "text": "How do I open an ISA?"}}
 """.strip()
 
 
@@ -191,16 +185,47 @@ async def infer(request: InferRequest):
 
 @app.post("/sil/generate", response_model=GenerateResponse)
 async def generate_example():
+    print(f"🔍 Generate request received. VERTEX_ENABLED: {VERTEX_ENABLED}", flush=True)
+    
     if VERTEX_ENABLED:
         try:
+            print(f"📞 Calling Vertex AI (model: {VERTEX_MODEL}, project: {VERTEX_PROJECT})", flush=True)
             model = _get_vertex_model()
+            
+            # Configure safety settings to allow financial content
+            # BLOCK_NONE = 1, BLOCK_ONLY_HIGH = 2, BLOCK_MEDIUM_AND_ABOVE = 3, BLOCK_LOW_AND_ABOVE = 4
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            ]
+            
+            print(f"📤 Sending request to Vertex AI...", flush=True)
             response = model.generate_content(
                 GENERATE_PROMPT,
                 generation_config={
                     "temperature": float(os.environ.get("VERTEX_TEMPERATURE", "0.8")),
-                    "max_output_tokens": int(os.environ.get("VERTEX_MAX_TOKENS", "64")),
+                    "max_output_tokens": int(os.environ.get("VERTEX_MAX_TOKENS", "128")),  # Increased from 64
                 },
+                safety_settings=safety_settings,
             )
+            print(f"✅ Vertex AI response received", flush=True)
+            
+            # Check if response has text content
+            if not hasattr(response, 'text') or not response.text:
+                # Check finish_reason to understand why
+                finish_reason = None
+                if hasattr(response, 'candidates') and response.candidates:
+                    finish_reason = getattr(response.candidates[0], 'finish_reason', None)
+                
+                if finish_reason == "SAFETY":
+                    raise ValueError("Response blocked by safety filters. Try a different prompt.")
+                elif finish_reason == "MAX_TOKENS":
+                    raise ValueError("Response hit token limit. Increase max_output_tokens.")
+                else:
+                    raise ValueError(f"Response has no text content. Finish reason: {finish_reason}")
+            
             raw_text = response.text.strip()
             
             # Debug: log what Vertex returned
@@ -248,13 +273,20 @@ async def generate_example():
             if topic not in SIL_TOPICS or not text:
                 raise ValueError("Invalid topic or empty text from Vertex response")
 
+            print(f"✅ Successfully generated query from Vertex AI: {text[:50]}...", flush=True)
             return {"text": text, "topic": topic}
         except Exception as exc:
             # Fall back to static prompts if Vertex generation fails
             print(f"⚠️  Vertex generation failed: {exc}", flush=True)
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}", flush=True)
+    else:
+        print(f"⚠️  Vertex AI is disabled. Using fallback prompts.", flush=True)
+        print(f"   VERTEX_PROJECT: {VERTEX_PROJECT}, vertexai module: {vertexai is not None}, GenerativeModel: {GenerativeModel is not None}", flush=True)
 
     fallback_topic = random.choice(SIL_TOPICS)
     fallback_text = random.choice(SAMPLE_PROMPTS)
+    print(f"📝 Using fallback prompt: {fallback_text[:50]}...", flush=True)
     return {"text": fallback_text, "topic": fallback_topic}
 
 
