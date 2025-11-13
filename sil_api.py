@@ -50,8 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Static files will be mounted after all API routes are defined
 
 
 class InferRequest(BaseModel):
@@ -227,4 +226,10 @@ async def generate_example():
     fallback_topic = random.choice(SIL_TOPICS)
     fallback_text = random.choice(SAMPLE_PROMPTS)
     return {"text": fallback_text, "topic": fallback_topic}
+
+
+# Mount static files last, after all API routes are defined
+# This ensures API routes take precedence over static file serving
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
