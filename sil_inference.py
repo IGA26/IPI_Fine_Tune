@@ -172,22 +172,29 @@ class SILInferenceService:
         if not self.model_dir.exists():
             raise FileNotFoundError(f"Model directory not found: {self.model_dir}")
 
+        print(f"🔄 Loading models from: {self.model_dir}", flush=True)
+        print(f"   Device: {self.device.upper()}", flush=True)
         AutoTokenizer, AutoModel = self._resolve_transformers()
 
+        print("\n📦 Loading SIL models...", flush=True)
         for label_type in LABEL_MAPPINGS.keys():
             model_path = self.model_dir / label_type
             if not model_path.exists():
+                print(f"   ⚠️  {label_type}: not found (skipping)", flush=True)
                 continue
             try:
+                print(f"   📥 Loading {label_type}...", end=" ", flush=True)
                 tokenizer = AutoTokenizer.from_pretrained(str(model_path))
                 model = AutoModel.from_pretrained(str(model_path))
                 model.eval()
                 model = model.to(self.device)
                 self.sil_models[label_type] = model
                 self.sil_tokenizers[label_type] = tokenizer
+                print(f"✅", flush=True)
             except Exception as exc:  # pragma: no cover - surface during runtime
-                print(f"⚠️  Failed to load {label_type} model: {exc}", file=sys.stderr)
+                print(f"❌ Failed: {exc}", flush=True)
 
+        print("\n📦 Loading emotion models...", flush=True)
         emotion_base = self.model_dir / "emotion"
         for label_type in EMOTION_MODEL_ORDER:
             if label_type == "emotion":
@@ -196,9 +203,11 @@ class SILInferenceService:
                 model_path = emotion_base / label_type
 
             if not model_path.exists():
+                print(f"   ⚠️  {label_type}: not found (skipping)", flush=True)
                 continue
 
             try:
+                print(f"   📥 Loading {label_type}...", end=" ", flush=True)
                 tokenizer = AutoTokenizer.from_pretrained(str(model_path))
                 if label_type == "severity" and not self.use_fake_models:
                     model = AutoModel.from_pretrained(
@@ -213,13 +222,19 @@ class SILInferenceService:
                 model = model.to(self.device)
                 self.emotion_models[label_type] = model
                 self.emotion_tokenizers[label_type] = tokenizer
+                print(f"✅", flush=True)
             except Exception as exc:
-                print(f"⚠️  Failed to load emotion {label_type} model: {exc}", file=sys.stderr)
+                print(f"❌ Failed: {exc}", flush=True)
 
         if not self.sil_models and not self.emotion_models:
             raise RuntimeError(
                 f"No models were loaded. Checked directory: {self.model_dir}"
             )
+        
+        print(f"\n✅ Models loaded successfully!")
+        print(f"   SIL models: {len(self.sil_models)} ({', '.join(self.sil_models.keys())})")
+        print(f"   Emotion models: {len(self.emotion_models)} ({', '.join(self.emotion_models.keys())})")
+        print(f"   Total: {len(self.sil_models) + len(self.emotion_models)} models ready for inference\n", flush=True)
 
     def _predict_classification(
         self, model: torch.nn.Module, tokenizer, text: str, labels: List[str]
@@ -275,7 +290,8 @@ class SILInferenceService:
         return value, confidence, inference_time_ms
 
     def _predict_wrapper(self, task: Tuple) -> Tuple[Tuple[str, str], Optional[Dict]]:
-        """Wrapper function for parallel execution of model predictions."""
+        """Wrapper function for parallel execution of model predictions.
+        Works well with GPU as CUDA operations release the GIL."""
         model_category, label_type, model, tokenizer, text, is_regression = task
         
         try:
@@ -337,8 +353,11 @@ class SILInferenceService:
                 ("emotion", label_type, model, self.emotion_tokenizers[label_type], normalized_text, is_regression)
             )
 
-        # Execute all predictions in parallel
-        with ThreadPoolExecutor(max_workers=len(all_tasks)) as executor:
+        # Parallel execution - works well with GPU as CUDA operations release the GIL
+        # Limit workers to avoid GPU memory issues (use all workers if on CPU, limit to 6-8 for GPU)
+        max_workers = len(all_tasks) if self.device == "cpu" else min(len(all_tasks), 8)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self._predict_wrapper, task): task for task in all_tasks}
             for future in as_completed(futures):
                 try:
