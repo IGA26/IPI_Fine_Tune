@@ -154,9 +154,12 @@ async def index():
 async def healthz():
     try:
         service = get_service()
+        all_models = list(service.sil_models.keys()) + list(service.emotion_models.keys())
         return {
             "status": "ok",
-            "models_loaded": list(service.models.keys()),
+            "models_loaded": all_models,
+            "sil_models": list(service.sil_models.keys()),
+            "emotion_models": list(service.emotion_models.keys()),
             "device": service.device,
         }
     except Exception as exc:  # pragma: no cover - startup failures
