@@ -28,6 +28,11 @@ import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
+from text_normalizer import normalize_spelling
+from text_quality import TextQualityChecker
+
+QUALITY_CHECKER = TextQualityChecker()
+
 
 # SIL Label mappings (must match finetune_sil_model.py)
 TOPIC_LABELS = [
@@ -725,9 +730,37 @@ def main():
         if text.lower() in ['quit', 'exit', 'q']:
             return
     
+    normalized_text = normalize_spelling(text)
+    if normalized_text != text:
+        print("📝 Normalized input text for spelling corrections.")
+        print(f"   Original : {text}")
+        print(f"   Corrected: {normalized_text}\n")
+        sys.stdout.flush()
+        text = normalized_text
+
+    quality = QUALITY_CHECKER.score(text)
+    if quality.is_gibberish:
+        print("⚠️  Input appears to be gibberish or unrecognised text.")
+        print("   Please rephrase and try again.")
+        print(
+            f"   word_ratio={quality.valid_word_ratio:.2f}, "
+            f"non_alnum={quality.non_alnum_ratio:.2f}, "
+            f"repeat={quality.repeated_char_ratio:.2f}"
+        )
+        sys.stdout.flush()
+        return
+
     # Run prediction
-    results = test_sentence(sil_models, sil_tokenizers, emotion_models, emotion_tokenizers,
-                           text, args.high_threshold, args.low_threshold, parallel=args.parallel)
+    results = test_sentence(
+        sil_models,
+        sil_tokenizers,
+        emotion_models,
+        emotion_tokenizers,
+        text,
+        args.high_threshold,
+        args.low_threshold,
+        parallel=args.parallel,
+    )
     
     if results is None:
         print("\n❌ Prediction failed - no results returned")
@@ -775,8 +808,36 @@ def main():
             if text.lower() in ['quit', 'exit', 'q']:
                 break
             if text:
-                results = test_sentence(sil_models, sil_tokenizers, emotion_models, emotion_tokenizers,
-                                       text, args.high_threshold, args.low_threshold, parallel=args.parallel)
+                quality = QUALITY_CHECKER.score(text)
+                if quality.is_gibberish:
+                    print("⚠️  Input appears to be gibberish or unrecognised text.")
+                    print("   Please rephrase and try again.")
+                    print(
+                        f"   word_ratio={quality.valid_word_ratio:.2f}, "
+                        f"non_alnum={quality.non_alnum_ratio:.2f}, "
+                        f"repeat={quality.repeated_char_ratio:.2f}"
+                    )
+                    sys.stdout.flush()
+                    continue
+
+                normalized_text = normalize_spelling(text)
+                if normalized_text != text:
+                    print("📝 Normalized input text for spelling corrections.")
+                    print(f"   Original : {text}")
+                    print(f"   Corrected: {normalized_text}\n")
+                    sys.stdout.flush()
+                    text = normalized_text
+
+                results = test_sentence(
+                    sil_models,
+                    sil_tokenizers,
+                    emotion_models,
+                    emotion_tokenizers,
+                    text,
+                    args.high_threshold,
+                    args.low_threshold,
+                    parallel=args.parallel,
+                )
                 if args.json and results:
                     print("\n" + "="*60)
                     print("JSON OUTPUT:")
