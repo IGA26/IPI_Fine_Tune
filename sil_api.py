@@ -132,10 +132,11 @@ Instructions:
 2. Write a concise first-person message (5-20 words) that matches the chosen topic.
    • If the topic is "off_topic", ensure the message is clearly unrelated to money or finance.
    • For financial topics, keep the language conversational and realistic (UK context).
-3. Respond strictly as JSON on a single line using this schema:
-   {{"topic": "<chosen_topic>", "text": "<user_message>"}}
+3. Respond with ONLY valid JSON on a single line. Use double quotes for strings. Escape any quotes in the text field.
+   Format: {{"topic": "chosen_topic", "text": "user_message"}}
+   Example: {{"topic": "savings", "text": "How do I open an ISA account?"}}
 
-Do not include any additional commentary.
+CRITICAL: Return ONLY the JSON object, no markdown, no code blocks, no explanation. Ensure all strings are properly escaped.
 """.strip()
 
 
@@ -201,16 +202,45 @@ async def generate_example():
                 },
             )
             raw_text = response.text.strip()
+            
+            # Debug: log what Vertex returned
+            print(f"🔍 Vertex raw response: {raw_text[:200]}...", flush=True)
+            
+            # Try to clean and parse JSON
+            payload = None
+            
+            # Step 1: Remove markdown code blocks if present
+            if raw_text.startswith("```"):
+                # Extract content between ```json and ```
+                lines = raw_text.split("\n")
+                json_lines = []
+                in_code_block = False
+                for line in lines:
+                    if line.strip().startswith("```"):
+                        in_code_block = not in_code_block
+                        continue
+                    if in_code_block:
+                        json_lines.append(line)
+                if json_lines:
+                    raw_text = "\n".join(json_lines).strip()
+            
+            # Step 2: Try direct JSON parse
             try:
                 payload = json.loads(raw_text)
             except json.JSONDecodeError:
-                # Attempt to extract JSON between braces if model added formatting
+                # Step 3: Extract JSON between braces
                 start = raw_text.find("{")
                 end = raw_text.rfind("}")
                 if start != -1 and end != -1 and end > start:
-                    payload = json.loads(raw_text[start : end + 1])
+                    json_str = raw_text[start : end + 1]
+                    try:
+                        payload = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        print(f"⚠️  JSON extraction failed: {e}", flush=True)
+                        print(f"   Extracted JSON string: {json_str[:200]}...", flush=True)
+                        raise
                 else:
-                    raise
+                    raise ValueError(f"No JSON object found in response: {raw_text[:200]}")
 
             topic = str(payload.get("topic", "")).strip().lower()
             text = str(payload.get("text", "")).strip()
