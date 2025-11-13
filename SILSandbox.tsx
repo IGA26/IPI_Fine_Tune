@@ -82,6 +82,8 @@ interface ClassificationResult {
   value: string;
   confidence: string;
   status: "high" | "medium" | "low" | null;
+  highlight?: boolean; // Highlight row in light red if true
+  paramKey?: string; // Original parameter key for checking values
 }
 
 const SILSandbox = () => {
@@ -190,7 +192,23 @@ const SILSandbox = () => {
           }
         }
 
-        return { parameter: label, value: String(value), confidence, status };
+        // Check if row should be highlighted (light red background)
+        // Highlight if: emotion == "negative" OR handover/distress/vulnerability == "true"
+        const stringValue = String(value).toLowerCase();
+        const shouldHighlight =
+          (param === "emotion" && stringValue === "negative") ||
+          (param === "handover" && stringValue === "true") ||
+          (param === "distress" && stringValue === "true") ||
+          (param === "vulnerability" && stringValue === "true");
+
+        return {
+          parameter: label,
+          value: String(value),
+          confidence,
+          status,
+          highlight: shouldHighlight,
+          paramKey: param,
+        };
       });
 
       setResults(predictionEntries);
@@ -394,8 +412,13 @@ const SILSandbox = () => {
                             ? "text-red-600 font-semibold"
                             : "text-muted-foreground";
 
+                        // Apply light red background if highlight is true
+                        const rowClasses = result.highlight
+                          ? "bg-red-50 hover:bg-red-100 transition-colors"
+                          : "hover:bg-muted/30 transition-colors";
+
                         return (
-                          <TableRow key={index} className="hover:bg-muted/30 transition-colors">
+                          <TableRow key={index} className={rowClasses}>
                             <TableCell className="font-medium">{result.parameter}</TableCell>
                             <TableCell className="font-mono text-sm">{result.value}</TableCell>
                             <TableCell className={`font-mono text-sm ${confidenceClasses}`}>{result.confidence}</TableCell>
