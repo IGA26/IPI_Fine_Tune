@@ -9,6 +9,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
 import random
 from pathlib import Path
@@ -22,7 +23,18 @@ from pydantic import BaseModel
 
 from sil_inference import GibberishInputError, SILInferenceService, _parse_env_flag
 
+try:
+    import vertexai
+    from vertexai.preview.generative_models import GenerativeModel
+except ImportError:  # pragma: no cover - optional dependency
+    vertexai = None  # type: ignore
+    GenerativeModel = None  # type: ignore
+
 STATIC_DIR = Path(__file__).parent / "static"
+
+DEFAULT_VERTEX_PROJECT = "playpen-c84caa"
+DEFAULT_VERTEX_LOCATION = "us-central1"
+DEFAULT_VERTEX_MODEL = "gemini-2.5-flash"
 
 app = FastAPI(
     title="SIL Tester",
@@ -56,6 +68,7 @@ class InferResponse(BaseModel):
 
 class GenerateResponse(BaseModel):
     text: str
+    topic: Optional[str] = None
 
 
 _service: Optional[SILInferenceService] = None
@@ -71,6 +84,20 @@ def get_service() -> SILInferenceService:
     return _service
 
 
+SIL_TOPICS = [
+    "savings",
+    "investments",
+    "pensions",
+    "mortgages",
+    "banking",
+    "loans",
+    "debt",
+    "insurance",
+    "taxation",
+    "general",
+    "off_topic",
+]
+
 SAMPLE_PROMPTS = [
     "How can I increase my ISA contributions this year?",
     "What happens if I miss a mortgage payment?",
@@ -78,7 +105,39 @@ SAMPLE_PROMPTS = [
     "I want to transfer money from my savings to pay off my loan.",
     "Do you offer any investment products with low risk?",
     "How do I check my account balance?",
+    "What is the best way to care for tomato plants on a balcony?",
 ]
+
+VERTEX_PROJECT = os.environ.get("VERTEX_PROJECT", DEFAULT_VERTEX_PROJECT)
+VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", DEFAULT_VERTEX_LOCATION)
+VERTEX_MODEL = os.environ.get("VERTEX_MODEL", DEFAULT_VERTEX_MODEL)
+VERTEX_ENABLED = bool(VERTEX_PROJECT and vertexai and GenerativeModel)
+
+_vertex_model: Optional[GenerativeModel] = None
+
+
+def _get_vertex_model() -> GenerativeModel:
+    global _vertex_model
+    if _vertex_model is None:
+        vertexai.init(project=VERTEX_PROJECT, location=VERTEX_LOCATION)
+        _vertex_model = GenerativeModel(VERTEX_MODEL)
+    return _vertex_model
+
+
+GENERATE_PROMPT = f"""
+You are creating short UK retail-finance utterances for testing a classification system.
+
+Instructions:
+1. Choose exactly one topic at random from this list:
+   {", ".join(SIL_TOPICS)}
+2. Write a concise first-person message (5-20 words) that matches the chosen topic.
+   • If the topic is "off_topic", ensure the message is clearly unrelated to money or finance.
+   • For financial topics, keep the language conversational and realistic (UK context).
+3. Respond strictly as JSON on a single line using this schema:
+   {{"topic": "<chosen_topic>", "text": "<user_message>"}}
+
+Do not include any additional commentary.
+""".strip()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -129,5 +188,40 @@ async def infer(request: InferRequest):
 
 @app.post("/sil/generate", response_model=GenerateResponse)
 async def generate_example():
-    return {"text": random.choice(SAMPLE_PROMPTS)}
+    if VERTEX_ENABLED:
+        try:
+            model = _get_vertex_model()
+            response = model.generate_content(
+                GENERATE_PROMPT,
+                generation_config={
+                    "temperature": float(os.environ.get("VERTEX_TEMPERATURE", "0.8")),
+                    "max_output_tokens": int(os.environ.get("VERTEX_MAX_TOKENS", "64")),
+                },
+            )
+            raw_text = response.text.strip()
+            try:
+                payload = json.loads(raw_text)
+            except json.JSONDecodeError:
+                # Attempt to extract JSON between braces if model added formatting
+                start = raw_text.find("{")
+                end = raw_text.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    payload = json.loads(raw_text[start : end + 1])
+                else:
+                    raise
+
+            topic = str(payload.get("topic", "")).strip().lower()
+            text = str(payload.get("text", "")).strip()
+
+            if topic not in SIL_TOPICS or not text:
+                raise ValueError("Invalid topic or empty text from Vertex response")
+
+            return {"text": text, "topic": topic}
+        except Exception as exc:
+            # Fall back to static prompts if Vertex generation fails
+            print(f"⚠️  Vertex generation failed: {exc}", flush=True)
+
+    fallback_topic = random.choice(SIL_TOPICS)
+    fallback_text = random.choice(SAMPLE_PROMPTS)
+    return {"text": fallback_text, "topic": fallback_topic}
 
