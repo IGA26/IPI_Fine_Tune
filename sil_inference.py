@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -273,6 +274,42 @@ class SILInferenceService:
         inference_time_ms = (time.time() - start) * 1000.0
         return value, confidence, inference_time_ms
 
+    def _predict_wrapper(self, task: Tuple) -> Tuple[Tuple[str, str], Optional[Dict]]:
+        """Wrapper function for parallel execution of model predictions."""
+        model_category, label_type, model, tokenizer, text, is_regression = task
+        
+        try:
+            if is_regression:
+                # Regression model (severity)
+                value, confidence, inference_time = self._predict_regression(
+                    model, tokenizer, text
+                )
+                return (model_category, label_type), {
+                    "category": model_category,
+                    "prediction": value,
+                    "confidence": confidence,
+                    "top3": [],
+                    "inference_time_ms": inference_time,
+                }
+            else:
+                # Classification model
+                if model_category == "sil":
+                    labels = LABEL_MAPPINGS[label_type]
+                else:
+                    labels = EMOTION_LABEL_MAPPINGS.get(label_type, [])
+                
+                prediction = self._predict_classification(model, tokenizer, text, labels)
+                return (model_category, label_type), {
+                    "category": model_category,
+                    "prediction": prediction.predicted_label,
+                    "confidence": prediction.confidence,
+                    "top3": prediction.top3,
+                    "inference_time_ms": prediction.inference_time_ms,
+                }
+        except Exception as exc:
+            print(f"⚠️  Error in parallel prediction for {model_category}/{label_type}: {exc}", file=sys.stderr)
+            return (model_category, label_type), None
+
     def classify(self, text: str) -> Dict:
         if not text or not text.strip():
             raise ValueError("Text must not be empty.")
@@ -283,68 +320,49 @@ class SILInferenceService:
 
         normalized_text = normalize_spelling(text)
 
-        sil_results: Dict[str, Dict] = {}
-        emotion_results: Dict[str, Dict] = {}
-        inference_times: List[float] = []
+        results: Dict[str, Dict] = {}
+        inference_times = {}
 
         overall_start = time.time()
 
+        # Prepare all tasks for parallel execution
+        all_tasks = []
         for label_type, model in self.sil_models.items():
-            tokenizer = self.sil_tokenizers[label_type]
-            prediction = self._predict_classification(
-                model, tokenizer, normalized_text, LABEL_MAPPINGS[label_type]
+            all_tasks.append(
+                ("sil", label_type, model, self.sil_tokenizers[label_type], normalized_text, False)
             )
-            sil_results[label_type] = {
-                "category": "sil",
-                "prediction": prediction.predicted_label,
-                "confidence": prediction.confidence,
-                "top3": prediction.top3,
-                "inference_time_ms": prediction.inference_time_ms,
-            }
-            inference_times.append(prediction.inference_time_ms)
-
         for label_type, model in self.emotion_models.items():
-            tokenizer = self.emotion_tokenizers[label_type]
-            if label_type == "severity":
-                value, confidence, inference_time = self._predict_regression(
-                    model, tokenizer, normalized_text
-                )
-                emotion_results[label_type] = {
-                    "category": "emotion",
-                    "prediction": value,
-                    "confidence": confidence,
-                    "top3": [],
-                    "inference_time_ms": inference_time,
-                }
-                inference_times.append(inference_time)
-            else:
-                labels = EMOTION_LABEL_MAPPINGS.get(label_type, [])
-                prediction = self._predict_classification(
-                    model, tokenizer, normalized_text, labels
-                )
-                emotion_results[label_type] = {
-                    "category": "emotion",
-                    "prediction": prediction.predicted_label,
-                    "confidence": prediction.confidence,
-                    "top3": prediction.top3,
-                    "inference_time_ms": prediction.inference_time_ms,
-                }
-                inference_times.append(prediction.inference_time_ms)
+            is_regression = (label_type == "severity")
+            all_tasks.append(
+                ("emotion", label_type, model, self.emotion_tokenizers[label_type], normalized_text, is_regression)
+            )
+
+        # Execute all predictions in parallel
+        with ThreadPoolExecutor(max_workers=len(all_tasks)) as executor:
+            futures = {executor.submit(self._predict_wrapper, task): task for task in all_tasks}
+            for future in as_completed(futures):
+                try:
+                    (model_category, label_type), prediction = future.result()
+                    if prediction:
+                        results[label_type] = prediction
+                        inference_times[label_type] = prediction["inference_time_ms"]
+                except Exception as exc:
+                    task = futures[future]
+                    print(f"⚠️  Error processing {task[0]}/{task[1]}: {exc}", file=sys.stderr)
 
         total_time_measured_ms = (time.time() - overall_start) * 1000.0
-        total_time_ms = float(sum(inference_times))
+        total_time_ms = float(sum(inference_times.values())) if inference_times else 0.0
         avg_time_ms = (
             total_time_ms / len(inference_times) if inference_times else 0.0
         )
 
         ordered_predictions: Dict[str, Dict] = {}
-        combined_results = {**sil_results, **emotion_results}
 
         for param in PARAMETER_ORDER:
-            if param in combined_results:
-                ordered_predictions[param] = combined_results[param]
+            if param in results:
+                ordered_predictions[param] = results[param]
 
-        for key, value in combined_results.items():
+        for key, value in results.items():
             if key not in ordered_predictions:
                 ordered_predictions[key] = value
 
