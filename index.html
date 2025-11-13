@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SIL Tester</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      header {
+        background: #1e293b;
+        color: #f8fafc;
+        padding: 1.5rem;
+        text-align: center;
+      }
+      main {
+        max-width: 960px;
+        margin: 2rem auto;
+        padding: 0 1rem 3rem;
+      }
+      section {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);
+      }
+      textarea {
+        width: 100%;
+        min-height: 120px;
+        border: 1px solid #cbd5f5;
+        border-radius: 8px;
+        padding: 0.75rem;
+        font-size: 1rem;
+        resize: vertical;
+      }
+      .button-row {
+        margin-top: 1rem;
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      button {
+        background: #2563eb;
+        border: none;
+        color: #ffffff;
+        border-radius: 8px;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: transform 0.1s ease, box-shadow 0.2s ease;
+      }
+      button.secondary {
+        background: #1e293b;
+      }
+      button:disabled {
+        background: #94a3b8;
+        cursor: not-allowed;
+        box-shadow: none;
+        transform: none;
+      }
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(37, 99, 235, 0.25);
+      }
+      .status {
+        margin-top: 1rem;
+        font-size: 0.95rem;
+      }
+      .status.error {
+        color: #dc2626;
+      }
+      .status.success {
+        color: #16a34a;
+      }
+      pre {
+        background: #0f172a;
+        color: #e2e8f0;
+        padding: 1rem;
+        border-radius: 8px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-top: 1.5rem;
+      }
+      .meta {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-top: 1rem;
+      }
+      .meta span {
+        background: #e2e8f0;
+        color: #0f172a;
+        padding: 0.35rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.9rem;
+      }
+      footer {
+        text-align: center;
+        font-size: 0.85rem;
+        color: #64748b;
+        margin-top: 2rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>SIL Interaction Sandbox</h1>
+      <p>Type an utterance or let the LLM draft one, then inspect SIL outputs.</p>
+    </header>
+    <main>
+      <section>
+        <label for="utterance"><strong>User Utterance</strong></label>
+        <textarea id="utterance" placeholder="Type a banking or investment query here..."></textarea>
+        <div class="button-row">
+          <button id="classify-btn">Classify</button>
+          <button id="details-btn" class="secondary" disabled>Details</button>
+          <button id="generate-btn" class="secondary">
+            Generate Query (LLM stub)
+          </button>
+          <button id="clear-btn" class="secondary">Clear</button>
+        </div>
+        <div id="status" class="status"></div>
+        <div class="summary" id="summary"></div>
+        <pre id="details" hidden></pre>
+      </section>
+      <footer>
+        Backend: <code>POST /sil/infer</code> and <code>/sil/generate</code>.
+        Start server with <code>uvicorn sil_api:app --reload</code>.
+      </footer>
+    </main>
+    <script>
+      const utteranceEl = document.getElementById("utterance");
+      const classifyBtn = document.getElementById("classify-btn");
+      const detailsBtn = document.getElementById("details-btn");
+      const generateBtn = document.getElementById("generate-btn");
+      const clearBtn = document.getElementById("clear-btn");
+      const statusEl = document.getElementById("status");
+      const summaryEl = document.getElementById("summary");
+      const detailsEl = document.getElementById("details");
+
+      let latestResult = null;
+      let detailsVisible = false;
+
+      function setStatus(message, type = "") {
+        statusEl.textContent = message;
+        statusEl.className = `status ${type}`;
+      }
+
+      function setLoading(isLoading) {
+        classifyBtn.disabled = isLoading;
+        generateBtn.disabled = isLoading;
+        detailsBtn.disabled = isLoading || !latestResult;
+        if (isLoading) {
+          setStatus("Working...", "");
+        }
+      }
+
+      function renderSummary(result) {
+        summaryEl.innerHTML = "";
+        if (!result) {
+          return;
+        }
+
+        const container = document.createElement("div");
+
+        const intro = document.createElement("div");
+        intro.innerHTML = `
+          <p><strong>Original:</strong> ${result.input_text}</p>
+          <p><strong>Normalized:</strong> ${result.normalized_text}</p>
+        `;
+        container.appendChild(intro);
+
+        const table = document.createElement("table");
+        table.style.width = "100%";
+        table.style.borderCollapse = "collapse";
+
+        const thead = document.createElement("thead");
+        thead.innerHTML = `
+          <tr>
+            <th style="text-align:left;padding:8px;border-bottom:1px solid #cbd5f5;">Parameter</th>
+            <th style="text-align:left;padding:8px;border-bottom:1px solid #cbd5f5;">Value</th>
+            <th style="text-align:left;padding:8px;border-bottom:1px solid #cbd5f5;">Confidence</th>
+          </tr>
+        `;
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        Object.entries(result.predictions || {}).forEach(([label, data]) => {
+          const value =
+            typeof data.prediction === "number"
+              ? data.prediction.toFixed(3)
+              : data.prediction;
+          const confidence =
+            typeof data.confidence === "number"
+              ? `${(data.confidence * 100).toFixed(1)}%`
+              : "-";
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-transform:capitalize;">${label}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;">${value}</td>
+            <td style="padding:8px;border-bottom:1px solid #e2e8f0;">${confidence}</td>
+          `;
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+
+        container.appendChild(table);
+
+        const timing = document.createElement("div");
+        timing.style.marginTop = "1rem";
+        timing.textContent = `Total inference: ${result.timing.total_inference_ms.toFixed(1)} ms • Average per model: ${result.timing.average_per_model_ms.toFixed(1)} ms`;
+        container.appendChild(timing);
+
+        summaryEl.appendChild(container);
+      }
+
+      async function classify() {
+        const text = utteranceEl.value.trim();
+        if (!text) {
+          setStatus("Please enter a query first.", "error");
+          return;
+        }
+
+        setLoading(true);
+        detailsEl.hidden = true;
+        summaryEl.innerHTML = "";
+        detailsVisible = false;
+        latestResult = null;
+
+        try {
+          const response = await fetch("/sil/infer", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          });
+
+          const data = await response.json();
+          if (!response.ok) {
+            const detail = data.detail || data;
+            setStatus(
+              `Error: ${
+                detail?.error ||
+                detail?.message ||
+                response.statusText ||
+                "Unknown"
+              }`,
+              "error"
+            );
+            detailsEl.hidden = false;
+            detailsEl.textContent = JSON.stringify(detail, null, 2);
+            return;
+          }
+
+          setStatus("Classification complete.", "success");
+          latestResult = data;
+          renderSummary(latestResult);
+          detailsEl.textContent = JSON.stringify(latestResult, null, 2);
+          detailsBtn.disabled = false;
+        } catch (error) {
+          console.error(error);
+          setStatus("Network error. Check backend logs.", "error");
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      async function generateQuery() {
+        setLoading(true);
+        try {
+          const response = await fetch("/sil/generate", { method: "POST" });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.detail || "Generation failed");
+          }
+          utteranceEl.value = data.text;
+          setStatus("Generated a sample utterance. You can now classify it.");
+        } catch (error) {
+          console.error(error);
+          setStatus("Failed to generate query.", "error");
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      classifyBtn.addEventListener("click", classify);
+      detailsBtn.addEventListener("click", () => {
+        if (!latestResult) return;
+        detailsVisible = !detailsVisible;
+        detailsEl.hidden = !detailsVisible;
+        detailsBtn.textContent = detailsVisible ? "Hide Details" : "Details";
+        if (detailsVisible) {
+          detailsEl.textContent = JSON.stringify(latestResult, null, 2);
+        }
+      });
+      generateBtn.addEventListener("click", generateQuery);
+      clearBtn.addEventListener("click", () => {
+        utteranceEl.value = "";
+        summaryEl.innerHTML = "";
+        detailsEl.hidden = true;
+        detailsEl.textContent = "";
+        latestResult = null;
+        detailsVisible = false;
+        detailsBtn.disabled = true;
+        detailsBtn.textContent = "Details";
+        setStatus("Cleared.");
+      });
+
+      utteranceEl.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+          classify();
+        }
+      });
+    </script>
+  </body>
+</html>
+
