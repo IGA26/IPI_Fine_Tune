@@ -43,8 +43,7 @@ DEFAULT_EXAMPLES_PER_TOPIC: Dict[str, int] = {
     "debt": 40,  # Lower because domain_scope is only "general"
     "insurance": 60,
     "taxation": 40,  # Lower because domain_scope is only "general"
-    "general": 40,  # Lower because domain_scope is only "general"
-    "off_topic": 30,  # Lower because domain_scope is only "general"
+    "general": 80,  # Can include bank_specific service queries (branch locations, opening hours, mobile app, etc.)
 }
 
 
@@ -386,7 +385,6 @@ def parse_args(argv=None):
     parser.add_argument("--insurance", type=int, help="Examples for insurance topic")
     parser.add_argument("--taxation", type=int, help="Examples for taxation topic")
     parser.add_argument("--general", type=int, help="Examples for general topic")
-    parser.add_argument("--off_topic", type=int, help="Examples for off_topic topic")
     
     # Optional: specify which topics to generate (default: all)
     parser.add_argument(
@@ -424,7 +422,6 @@ def main(argv=None):
         "insurance": args.insurance,
         "taxation": args.taxation,
         "general": args.general,
-        "off_topic": args.off_topic,
     }
     
     for topic, count in topic_arg_map.items():
