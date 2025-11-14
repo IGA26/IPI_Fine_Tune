@@ -246,7 +246,8 @@ def generate_batch(
   * CRITICAL: Ensure good variety across different product categories/types (e.g., for insurance: life, home, travel, car, pet, etc.)"""
     
     # Split into batches if count is large to avoid rate limits
-    batch_size = 100  # Generate 100 examples per batch
+    # Start with smaller batches to avoid MAX_TOKENS truncation
+    batch_size = 50  # Reduced from 100 to 50 to avoid JSON truncation issues
     if count > batch_size:
         print(f"Generating {count} examples in batches of {batch_size} to avoid rate limits...", file=sys.stderr)
         all_unique = []
@@ -440,7 +441,12 @@ def main(argv=None):
         if invalid_topics:
             raise ValueError(f"Invalid topics: {invalid_topics}. Valid: {list(TOPIC_MATRIX.keys())}")
     else:
-        topics_to_generate = list(TOPIC_MATRIX.keys())
+        # Default: exclude banking and insurance (already successful)
+        # Run only: savings, investments, pensions, mortgages, loans, debt, taxation, general
+        all_topics = list(TOPIC_MATRIX.keys())
+        topics_to_generate = [t for t in all_topics if t not in ["banking", "insurance"]]
+        print(f"Note: Excluding 'banking' and 'insurance' (already successful).", file=sys.stderr)
+        print(f"To include all topics, use: --topics {','.join(all_topics)}", file=sys.stderr)
     
     # Build examples_per_topic dict from defaults and overrides
     examples_per_topic = DEFAULT_EXAMPLES_PER_TOPIC.copy()
