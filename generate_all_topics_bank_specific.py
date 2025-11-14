@@ -251,10 +251,11 @@ def generate_batch(
         print(f"Generating {count} examples in batches of {batch_size} to avoid rate limits...", file=sys.stderr)
         all_unique = []
         seen = set()
-        max_batches = 10  # Safety limit
+        max_batches = 20  # Increased from 10 to allow more retries
         batch_num = 0
         invalid_count = 0
         duplicate_count = 0
+        consecutive_low_yield = 0  # Track consecutive batches with low yield
         
         while len(all_unique) < count and batch_num < max_batches:
             remaining = count - len(all_unique)
@@ -304,19 +305,41 @@ def generate_batch(
             print(f"  Total so far: {len(all_unique)}/{count} (invalid: {invalid_count}, duplicates: {duplicate_count})", file=sys.stderr)
             
             if len(batch_unique) < current_batch_size * 0.5:
+                consecutive_low_yield += 1
                 print(f"  ⚠️  Warning: Got only {len(batch_unique)}/{current_batch_size} examples. Response may have been truncated.", file=sys.stderr)
+                if consecutive_low_yield >= 3:
+                    print(f"  ⚠️  Warning: {consecutive_low_yield} consecutive batches with low yield. Consider checking API limits or prompt.", file=sys.stderr)
+            else:
+                consecutive_low_yield = 0  # Reset counter on successful batch
             
             if len(examples) > 0 and batch_duplicate > len(examples) * 0.3:
                 print(f"  ⚠️  Warning: High duplicate rate ({batch_duplicate}/{len(examples)} = {batch_duplicate/len(examples)*100:.1f}%).", file=sys.stderr)
             
+            # If we're making good progress, continue; if not, consider stopping early
             if len(all_unique) < count:
-                delay = 2
+                # If we've made minimal progress in last few batches, increase delay
+                if consecutive_low_yield >= 2:
+                    delay = 5  # Longer delay if having issues
+                else:
+                    delay = 2
                 print(f"  Waiting {delay} seconds before next batch...", file=sys.stderr)
                 time.sleep(delay)
         
         unique = all_unique
-        if len(unique) < count:
+        min_threshold = max(10, int(count * 0.3))  # At least 30% or 10 examples
+        
+        if len(unique) < min_threshold:
+            print(f"❌ CRITICAL: Generated only {len(unique)}/{count} examples ({len(unique)/count*100:.1f}%).", file=sys.stderr)
+            print(f"   Minimum threshold: {min_threshold} examples. This is insufficient.", file=sys.stderr)
+            if batch_num >= max_batches:
+                print(f"   Reached maximum batch limit ({max_batches}). Consider increasing max_batches or reducing batch_size.", file=sys.stderr)
+            print(f"   This topic will be marked as failed.", file=sys.stderr)
+        elif len(unique) < count:
             print(f"⚠️  Warning: Generated {len(unique)}/{count} examples ({len(unique)/count*100:.1f}%).", file=sys.stderr)
+            if batch_num >= max_batches:
+                print(f"   Reached maximum batch limit ({max_batches}). Consider increasing max_batches or reducing batch_size.", file=sys.stderr)
+            if len(unique) < count * 0.5:
+                print(f"   ⚠️  Generated less than 50% of requested examples. This topic may need manual review.", file=sys.stderr)
         else:
             print(f"✅ Generated {len(unique)} total unique examples (requested {count})", file=sys.stderr)
         
@@ -351,6 +374,10 @@ def generate_batch(
                 print(f"Warning: Skipping invalid example: {e}", file=sys.stderr)
                 continue
 
+    # Check if we met minimum threshold
+    min_threshold = max(10, int(count * 0.3))  # At least 30% or 10 examples
+    meets_minimum = len(unique) >= min_threshold
+    
     metadata = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "topic": topic,
@@ -361,7 +388,15 @@ def generate_batch(
         "total_examples": len(unique),
         "model_name": model_name,
         "bank_specific_ratio": "80%",
+        "meets_minimum_threshold": meets_minimum,
+        "minimum_threshold": min_threshold,
     }
+    
+    # Only return data if it meets minimum threshold
+    if not meets_minimum:
+        # Return empty dataset to trigger failure handling
+        return {"metadata": metadata, "training_data": []}
+    
     return {"metadata": metadata, "training_data": unique}
 
 
@@ -479,6 +514,26 @@ def main(argv=None):
                 print(f"⚠️  Warning: Generated 0 examples for {topic}. Skipping.", file=sys.stderr)
                 failed_topics.append(topic)
                 continue
+            
+            # Check if we got a reasonable amount
+            generated_count = len(dataset["training_data"])
+            min_threshold = max(10, int(count * 0.3))  # At least 30% or 10 examples, whichever is higher
+            
+            if generated_count < min_threshold:
+                print(f"❌ ERROR: Generated only {generated_count}/{count} examples ({generated_count/count*100:.1f}%) for {topic}.", file=sys.stderr)
+                print(f"   Minimum threshold: {min_threshold} examples. This is insufficient.", file=sys.stderr)
+                print(f"   Marking as failed. Consider re-running this topic separately.", file=sys.stderr)
+                failed_topics.append(topic)
+                # Don't save - mark as failed instead
+                continue
+            
+            # Check if we got less than 50% (warning but still save)
+            if generated_count < count * 0.5:
+                print(f"⚠️  Warning: Generated only {generated_count}/{count} examples ({generated_count/count*100:.1f}%) for {topic}.", file=sys.stderr)
+                print(f"   This is less than 50% of requested. Consider re-running for this topic.", file=sys.stderr)
+                # Still save what we have, but mark it as potentially incomplete
+                dataset["metadata"]["incomplete"] = True
+                dataset["metadata"]["completion_percentage"] = generated_count / count * 100
             
             # Save to training_data/{topic}/all_stages/{filename}.json
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
